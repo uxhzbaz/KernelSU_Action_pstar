@@ -70,7 +70,7 @@ jobs:
         if: failure()
         uses: appleboy/telegram-action@master
         with:
-          to: ${{ secrets.CHANNEL_ID }}
+          to: ${{ secrets.CHAT_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
             ❌ *pstar 内核编译失败!*
