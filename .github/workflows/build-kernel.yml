@@ -19,14 +19,14 @@ jobs:
         with:
           repository: osm0sis/AnyKernel3
           path: zipper
-          depth: 1
+          fetch-depth: 1
 
       - name: Build Kernel with Android Kernel Actions
         uses: lemniskett/android-kernel-actions@master
         id: kernel_build
         with:
           arch: arm64
-          compiler: aosp-clang/main-ndk/clang-r522817/binutils
+          compiler: aosp-clang/main/binutils
           defconfig: pstar_defconfig
           image: Image
 
