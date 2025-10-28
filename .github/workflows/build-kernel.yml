@@ -40,16 +40,17 @@ jobs:
 
       - name: Build Kernel
         id: kernel_build
-        uses: lemniskett/android-kernel-actions@master
+        uses: aryan-sharma/android-kernel-actions@master
         env:
-          EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
-          NAME: "Pstar-Kernel"
+          DISABLE_CC_WERROR: "true" 
         with:
           arch: arm64
-          compiler: aosp-clang/android12-release/clang-r416183b1/binutils
+          compiler_name: neutron-clang
+          compiler_branch: 18
           defconfig: vendor/lineageos_pstar_defconfig
           image: Image
-
+          anykernel: true
+          
       - name: Send Kernel on Success
         if: success()
         uses: appleboy/telegram-action@master
@@ -57,12 +58,12 @@ jobs:
           to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            ✅ *内核编译成功!*
+            ✅ *pstar 内核编译成功!*
             
             *分支*: `${{ github.ref_name }}`
             *耗时*: `${{ steps.kernel_build.outputs.elapsed_time }} 秒`
             *提交*: `${{ github.sha }}`
-          document: ${{ steps.kernel_build.outputs.outfile }}
+          document: ${{ steps.kernel_build.outputs.zip_path }} # Action 输出变量名不同
           format: markdown
 
       - name: Send Failure Log on Failure
@@ -72,15 +73,15 @@ jobs:
           to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            ❌ *内核编译失败!*
+            ❌ *pstar 内核编译失败!*
             
             *分支*: `${{ github.ref_name }}`
             *请检查详细日志*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
 
-      - name: Upload Kernel Artifact
+      - name: Upload Kernel as Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pstar-kernel-zip
-          path: ${{ steps.kernel_build.outputs.outfile }}
+          path: ${{ steps.kernel_build.outputs.zip_path }} # Action 输出变量名不同
