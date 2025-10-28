@@ -9,7 +9,7 @@ on:
 
 jobs:
   build_kernel:
-    name: Build Android Kernel with Proton Clang
+    name: Build Android Kernel
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Kernel Source
@@ -24,6 +24,7 @@ jobs:
           repository: osm0sis/AnyKernel3
           path: zipper
           fetch-depth: 1
+
       - name: Create Composite Defconfig
         run: |
           cat arch/arm64/configs/vendor/kona-perf_defconfig \
@@ -45,18 +46,18 @@ jobs:
           NAME: "Pstar-Kernel"
         with:
           arch: arm64
-          compiler: proton-clang/master/binutils
+          compiler: aosp-clang/android12-release/clang-r416183b1/binutils
           defconfig: vendor/lineageos_pstar_defconfig
           image: Image
 
-      - name: Send Kernel to Telegram
+      - name: Send Kernel on Success
         if: success()
         uses: appleboy/telegram-action@master
         with:
-          to: ${{ secrets.CHAT_ID }}
+          to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            *pstar 内核编译成功!*
+            ✅ *内核编译成功!*
             
             *分支*: `${{ github.ref_name }}`
             *耗时*: `${{ steps.kernel_build.outputs.elapsed_time }} 秒`
@@ -64,8 +65,21 @@ jobs:
           document: ${{ steps.kernel_build.outputs.outfile }}
           format: markdown
 
-      - name: Upload Kernel as Artifact
-        if: always()
+      - name: Send Failure Log on Failure
+        if: failure()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.CHANNEL_ID }}
+          token: ${{ secrets.TG_BOT_TOKEN }}
+          message: |
+            ❌ *内核编译失败!*
+            
+            *分支*: `${{ github.ref_name }}`
+            *请检查详细日志*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          format: markdown
+
+      - name: Upload Kernel Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pstar-kernel-zip
