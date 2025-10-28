@@ -1,13 +1,11 @@
 name: Build pstar Kernel CI
 
 on:
-  # 允许您在 Actions 页面手动点击 "Run workflow" 来触发构建
   workflow_dispatch:
-  # 当有新的代码推送到 main 分支时，自动触发构建
- # push:
-   # branches:
-      #- main
-     # - master
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
   build_kernel:
@@ -26,36 +24,39 @@ jobs:
           repository: osm0sis/AnyKernel3
           path: zipper
           fetch-depth: 1
+      - name: Create Composite Defconfig
+        run: |
+          cat arch/arm64/configs/vendor/kona-perf_defconfig \
+              arch/arm64/configs/vendor/ext_config/moto-kona.config \
+              arch/arm64/configs/vendor/ext_config/pstar-default.config \
+              arch/arm64/configs/vendor/debugfs.config > arch/arm64/configs/vendor/lineageos_pstar_defconfig
+          echo "Successfully created composite defconfig!"
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ github.job }}-${{ hashFiles('arch/arm64/configs/pstar_defconfig') }}
+          key: ${{ github.job }}-${{ hashFiles('**/lineageos_pstar_defconfig') }}
 
       - name: Build Kernel
-        id: kernel_build # 为此步骤设置一个ID，方便后续引用
+        id: kernel_build
         uses: lemniskett/android-kernel-actions@master
         env:
-          # 将 ccache 添加到环境变量中，编译时会自动使用
           EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
-          KERNEL_PATH: "."
           NAME: "Pstar-Kernel"
-          PYTHON_VERSION: "3"
         with:
           arch: arm64
           compiler: proton-clang/master/binutils
-          defconfig: pstar_defconfig
+          defconfig: vendor/lineageos_pstar_defconfig
           image: Image
 
       - name: Send Kernel to Telegram
-        # 仅在编译成功时运行此步骤
         if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.CHAT_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            *内核编译成功!*
+            *pstar 内核编译成功!*
             
             *分支*: `${{ github.ref_name }}`
             *耗时*: `${{ steps.kernel_build.outputs.elapsed_time }} 秒`
@@ -64,7 +65,6 @@ jobs:
           format: markdown
 
       - name: Upload Kernel as Artifact
-        # 无论成功失败，都上传日志和产物（如果有）
         if: always()
         uses: actions/upload-artifact@v4
         with:
