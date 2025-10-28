@@ -40,24 +40,24 @@ jobs:
 
       - name: Build Kernel
         id: kernel_build
-        # 核心修正 1：回到我们最初使用的、确认存在的 Action
-        uses: lemniskett/android-kernel-actions@master
-        env:
-          NAME: "Pstar-Kernel"
-          # 增加一个保险的环境变量，在某些内核上可以避免警告被视为错误
-          EXTRA_CMDS: "KCFLAGS=-Wno-error"
-        with:
-          arch: arm64
-          # 核心修正 2：使用 Proton Clang 的稳定版本 13.0.0，这是解决 Segmentation Fault 的关键
-          compiler: proton-clang/13.0.0/binutils
-          defconfig: vendor/lineageos_pstar_defconfig
-          image: Image
+        run: |
+          uses: lemniskett/android-kernel-actions@master
+          id: build
+          env:
+            EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
+            NAME: "Pstar-Kernel"
+          with:
+            arch: arm64
+            compiler: aosp-clang/android12-release/clang-r416183b1/binutils
+            defconfig: vendor/lineageos_pstar_defconfig
+            image: Image
+          2>&1 | tee build.log
 
-      - name: Send Kernel on Success
+      - name: Send Success Notification
         if: success()
         uses: appleboy/telegram-action@master
         with:
-          to: ${{ secrets.CHANNEL_ID }}
+          to: ${{ secrets.CHAT_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
             ✅ *pstar 内核编译成功!*
@@ -68,22 +68,17 @@ jobs:
           document: ${{ steps.kernel_build.outputs.outfile }}
           format: markdown
 
-      - name: Send Failure Log on Failure
+      - name: Send Failure Notification and Logs
         if: failure()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.CHANNEL_ID }}
-          token: ${{ secrets.TG_BOT_TOKEN }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
             ❌ *pstar 内核编译失败!*
             
             *分支*: `${{ github.ref_name }}`
-            *请检查详细日志*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            *请检查 Actions 日志获取详细信息。*
+          # 将包含完整错误信息的日志文件作为文档发送
+          document: build.log
           format: markdown
-
-      - name: Upload Kernel as Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pstar-kernel-zip
-          path: ${{ steps.kernel_build.outputs.outfile }}
