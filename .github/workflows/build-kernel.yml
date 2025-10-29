@@ -38,20 +38,19 @@ jobs:
         with:
           key: ${{ github.job }}-${{ hashFiles('**/lineageos_pstar_defconfig') }}
 
+      # --- 修正点在这里 ---
+      # 恢复了正确的 "uses:" 语法结构，移除了错误的 "run:"
       - name: Build Kernel
         id: kernel_build
-        run: |
-          uses: lemniskett/android-kernel-actions@master
-          id: build
-          env:
-            EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
-            NAME: "Pstar-Kernel"
-          with:
-            arch: arm64
-            compiler: aosp-clang/android12-release/clang-r416183b1/binutils
-            defconfig: vendor/lineageos_pstar_defconfig
-            image: Image
-          2>&1 | tee build.log
+        uses: lemniskett/android-kernel-actions@master
+        env:
+          EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
+          NAME: "Pstar-Kernel"
+        with:
+          arch: arm64
+          compiler: aosp-clang/android12-release/clang-r416183b1/binutils
+          defconfig: vendor/lineageos_pstar_defconfig
+          image: Image
 
       - name: Send Success Notification
         if: success()
@@ -68,7 +67,8 @@ jobs:
           document: ${{ steps.kernel_build.outputs.outfile }}
           format: markdown
 
-      - name: Send Failure Notification and Logs
+      # --- 改进的失败通知 ---
+      - name: Send Failure Notification
         if: failure()
         uses: appleboy/telegram-action@master
         with:
@@ -78,7 +78,7 @@ jobs:
             ❌ *pstar 内核编译失败!*
             
             *分支*: `${{ github.ref_name }}`
-            *请检查 Actions 日志获取详细信息。*
-          # 将包含完整错误信息的日志文件作为文档发送
-          document: build.log
+            *点击下方链接查看完整日志:*
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
+          disable_web_page_preview: true
