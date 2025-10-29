@@ -10,75 +10,27 @@ on:
 jobs:
   build_kernel:
     name: Build Android Kernel
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_motorola_sm8250
-          ref: lineage-23.0
 
-      - name: Checkout AnyKernel3
-        uses: actions/checkout@v4
-        with:
-          repository: osm0sis/AnyKernel3
-          path: zipper
-          fetch-depth: 1
-
-      - name: Create Composite Defconfig
-        run: |
-          cat arch/arm64/configs/vendor/kona-perf_defconfig \
-              arch/arm64/configs/vendor/ext_config/moto-kona.config \
-              arch/arm64/configs/vendor/ext_config/pstar-default.config \
-              arch/arm64/configs/vendor/debugfs.config > arch/arm64/configs/vendor/lineageos_pstar_defconfig
-          echo "Successfully created composite defconfig!"
-
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ github.job }}-${{ hashFiles('**/lineageos_pstar_defconfig') }}
-
-      # --- 修正点在这里 ---
-      # 恢复了正确的 "uses:" 语法结构，移除了错误的 "run:"
       - name: Build Kernel
-        id: kernel_build
-        uses: lemniskett/android-kernel-actions@master
-        env:
-          EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
-          NAME: "Pstar-Kernel"
+        uses: dabao1955/kernel_build_action@main
         with:
+          # 1. 内核源码信息
+          kernel-url: https://github.com/LineageOS/android_kernel_motorola_sm8250
+          kernel-branch: lineage-23.0
+
+          config: vendor/ext_config/pstar-default.config
           arch: arm64
-          compiler: aosp-clang/android12-release/clang-r416183b1/binutils
-          defconfig: vendor/lineageos_pstar_defconfig
-          image: Image
-
-      - name: Send Success Notification
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.CHAT_ID }}
-          token: ${{ secrets.TG_BOT_TOKEN }}
-          message: |
-            ✅ *pstar 内核编译成功!*
-            
-            *分支*: `${{ github.ref_name }}`
-            *耗时*: `${{ steps.kernel_build.outputs.elapsed_time }} 秒`
-            *提交*: `${{ github.sha }}`
-          document: ${{ steps.kernel_build.outputs.outfile }}
-          format: markdown
-
-      # --- 改进的失败通知 ---
-      - name: Send Failure Notification
-        if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.CHANNEL_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ❌ *pstar 内核编译失败!*
-            
-            *分支*: `${{ github.ref_name }}`
-            *点击下方链接查看完整日志:*
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          format: markdown
-          disable_web_page_preview: true
+          aosp-gcc: true
+          aosp-clang: true
+          android-version: 12
+          aosp-clang-version: r416183b1
+          anykernel3: true
+          release: false # 成功后可以改为 true
+          access-token: ${{ secrets.GITHUB_TOKEN }}
+          ccache: true
+          disable-lto: true
