@@ -10,27 +10,62 @@ on:
 jobs:
   build_kernel:
     name: Build Android Kernel
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-
+    runs-on: ubuntu-latest
     steps:
+      # 这一步是必须的，用来检出包含此工作流文件的仓库
+      - name: Checkout Workflow Repo
+        uses: actions/checkout@v4
 
-      - name: Build Kernel
+      # 使用新的、功能强大的内核编译 Action
+      - name: Build Kernel with dabao1955 Action
+        id: kernel_build
         uses: dabao1955/kernel_build_action@main
         with:
-          # 1. 内核源码信息
-          kernel-url: https://github.com/LineageOS/android_kernel_motorola_sm8250
-          kernel-branch: lineage-23.0
+          # --- 内核源码配置 ---
+          kernel_source: https://github.com/LineageOS/android_kernel_motorola_sm8250
+          kernel_source_branch: lineage-23.0
+          generate_build_config: true
+          generate_build_config_command: cat arch/arm64/configs/vendor/kona-perf_defconfig arch/arm64/configs/vendor/ext_config/moto-kona.config arch/arm64/configs/vendor/ext_config/pstar-default.config arch/arm64/configs/vendor/debugfs.config > arch/arm64/configs/vendor/lineageos_pstar_defconfig
+          kernel_config: vendor/lineageos_pstar_defconfig
 
-          config: vendor/ext_config/pstar-default.config
+          clang_branch: android12-release
+          clang_version: r416183b1
+          enable_gcc_arm64: true
+          enable_gcc_arm32: true
+
           arch: arm64
-          aosp-gcc: true
-          aosp-clang: true
-          android-version: 12
-          aosp-clang-version: r416183b1
-          anykernel3: true
-          release: false # 成功后可以改为 true
-          access-token: ${{ secrets.GITHUB_TOKEN }}
-          ccache: true
-          disable-lto: true
+          image_name: Image
+          extra_cmd: LD=ld.lld
+
+          anykernel3_source: https://github.com/osm0sis/AnyKernel3
+          anykernel3_branch: master
+          
+      - name: Send Success Notification
+        if: success()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.CHAT_ID }}
+          token: ${{ secrets.TG_BOT_TOKEN }}
+          message: |
+            ✅ *pstar 内核编译成功!*
+            
+            *分支*: `${{ github.ref_name }}`
+            *点击下方链接下载刷机包*
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          format: markdown
+          disable_web_page_preview: true
+          
+      - name: Send Failure Notification
+        if: failure()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.CHAT_ID }}
+          token: ${{ secrets.TG_BOT_TOKEN }}
+          message: |
+            ❌ *pstar 内核编译失败!*
+            
+            *分支*: `${{ github.ref_name }}`
+            *点击下方链接查看完整日志:*
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          format: markdown
+          disable_web_page_preview: true
