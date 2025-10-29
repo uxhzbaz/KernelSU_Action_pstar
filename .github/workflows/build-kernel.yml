@@ -1,71 +1,97 @@
-name: Build pstar Kernel CI
+name: Build pstar Kernel CI (Final)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 jobs:
-  build_kernel:
-    name: Build Android Kernel
+  build:
+    name: Build pstar Kernel
     runs-on: ubuntu-latest
     steps:
-      # 这一步是必须的，用来检出包含此工作流文件的仓库
-      - name: Checkout Workflow Repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 使用新的、功能强大的内核编译 Action
-      - name: Build Kernel with dabao1955 Action
-        id: kernel_build
-        uses: dabao1955/kernel_build_action@main
-        with:
-          # --- 内核源码配置 ---
-          kernel_source: https://github.com/LineageOS/android_kernel_motorola_sm8250
-          kernel_source_branch: lineage-23.0
-          generate_build_config: true
-          generate_build_config_command: cat arch/arm64/configs/vendor/kona-perf_defconfig arch/arm64/configs/vendor/ext_config/moto-kona.config arch/arm64/configs/vendor/ext_config/pstar-default.config arch/arm64/configs/vendor/debugfs.config > arch/arm64/configs/vendor/lineageos_pstar_defconfig
-          kernel_config: vendor/lineageos_pstar_defconfig
+      - name: Create Build Configuration (config.env)
+        run: |
+          echo "KERNEL_SOURCE=https://github.com/LineageOS/android_kernel_motorola_sm8250" > config.env
+          echo "KERNEL_SOURCE_BRANCH=lineage-23.0" >> config.env
+          echo "KERNEL_CONFIG=vendor/lineageos_pstar_defconfig" >> config.env
+          echo "KERNEL_IMAGE_NAME=Image" >> config.env
+          echo "ARCH=arm64" >> config.env
+          echo "CLANG_BRANCH=android12-release" >> config.env
+          echo "CLANG_VERSION=r416183b1" >> config.env
+          echo "EXTRA_CMDS=LD=ld.lld" >> config.env
 
-          clang_branch: android12-release
-          clang_version: r416183b1
-          enable_gcc_arm64: true
-          enable_gcc_arm32: true
+      - name: Prepare Environment
+        id: prepare
+        run: |
+          sudo apt-get update && sudo apt-get install -y git ccache build-essential zip curl zlib1g-dev python3 bc
+          mkdir -p $GITHUB_WORKSPACE/workspace
+          echo "KERNEL_CONFIG=$(cat config.env | grep "KERNEL_CONFIG" | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "ARCH=$(cat config.env | grep "ARCH" | cut -d "=" -f 2)" >> $GITHUB_ENV
 
-          arch: arm64
-          image_name: Image
-          extra_cmd: LD=ld.lld
+      - name: Download Toolchain
+        run: |
+          cd $GITHUB_WORKSPACE/workspace
+          CLANG_BRANCH=$(cat ../config.env | grep "CLANG_BRANCH" | cut -d "=" -f 2)
+          CLANG_VERSION=$(cat ../config.env | grep "CLANG_VERSION" | cut -d "=" -f 2)
+          mkdir clang-aosp && cd clang-aosp
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/clang-${CLANG_VERSION}.tar.gz
+          tar -xzf clang-${CLANG_VERSION}.tar.gz
 
-          anykernel3_source: https://github.com/osm0sis/AnyKernel3
-          anykernel3_branch: master
+      - name: Download Kernel Source
+        run: |
+          cd $GITHUB_WORKSPACE/workspace
+          KERNEL_SOURCE=$(cat ../config.env | grep "KERNEL_SOURCE" | cut -d "=" -f 2)
+          KERNEL_SOURCE_BRANCH=$(cat ../config.env | grep "KERNEL_SOURCE_BRANCH" | cut -d "=" -f 2)
+          git clone --depth=1 ${KERNEL_SOURCE} -b ${KERNEL_SOURCE_BRANCH} kernel
+
+      - name: Generate Defconfig
+        run: |
+          cd $GITHUB_WORKSPACE/workspace/kernel
+          cat arch/arm64/configs/vendor/kona-perf_defconfig \
+              arch/arm64/configs/vendor/ext_config/moto-kona.config \
+              arch/arm64/configs/vendor/ext_config/pstar-default.config \
+              arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+          echo "Successfully created composite defconfig!"
+
+      - name: Build Kernel
+        id: build
+        run: |
+          cd $GITHUB_WORKSPACE/workspace/kernel
+          export PATH=$GITHUB_WORKSPACE/workspace/clang-aosp/bin:$PATH
+          export KBUILD_BUILD_USER="機械生命拯救者"
+          export KBUILD_BUILD_HOST="GitHub-Actions"
+          EXTRA_CMDS=$(cat ../../config.env | grep "EXTRA_CMDS" | cut -d "=" -f 2)
           
-      - name: Send Success Notification
-        if: success()
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${{ env.KERNEL_CONFIG }}
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${EXTRA_CMDS}
+
+      - name: Package with AnyKernel3
+        id: package
+        run: |
+          cd $GITHUB_WORKSPACE/workspace
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          KERNEL_IMAGE_NAME=$(cat ../config.env | grep "KERNEL_IMAGE_NAME" | cut -d "=" -f 2)
+          cp kernel/out/arch/${{ env.ARCH }}/boot/${KERNEL_IMAGE_NAME} AnyKernel3/
+          cd AnyKernel3
+          zip -r9 Pstar-Kernel-$(date +%Y%m%d-%H%M).zip .
+          echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pstar-kernel-zip
+          path: ${{ steps.package.outputs.zip_path }}
+
+      - name: Send Telegram Notification
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.CHAT_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            ✅ *pstar 内核编译成功!*
+            ✅ *pstar 内核编译并打包成功!*
             
-            *分支*: `${{ github.ref_name }}`
-            *点击下方链接下载刷机包*
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          format: markdown
-          disable_web_page_preview: true
-          
-      - name: Send Failure Notification
-        if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.CHAT_ID }}
-          token: ${{ secrets.TG_BOT_TOKEN }}
-          message: |
-            ❌ *pstar 内核编译失败!*
-            
-            *分支*: `${{ github.ref_name }}`
-            *点击下方链接查看完整日志:*
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            *链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
           disable_web_page_preview: true
