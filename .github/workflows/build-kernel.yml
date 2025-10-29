@@ -1,4 +1,4 @@
-name: Build pstar Kernel CI (Final)
+name: Build pstar Kernel CI
 
 on:
   workflow_dispatch:
@@ -8,43 +8,32 @@ jobs:
     name: Build pstar Kernel
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Create Build Configuration (config.env)
+      - name: Set Build Variables
         run: |
-          echo "KERNEL_SOURCE=https://github.com/LineageOS/android_kernel_motorola_sm8250" > config.env
-          echo "KERNEL_SOURCE_BRANCH=lineage-23.0" >> config.env
-          echo "KERNEL_CONFIG=vendor/lineageos_pstar_defconfig" >> config.env
-          echo "KERNEL_IMAGE_NAME=Image" >> config.env
-          echo "ARCH=arm64" >> config.env
-          echo "CLANG_BRANCH=android12-release" >> config.env
-          echo "CLANG_VERSION=r416183b1" >> config.env
-          echo "EXTRA_CMDS=LD=ld.lld" >> config.env
+          echo "KERNEL_SOURCE=https://github.com/LineageOS/android_kernel_motorola_sm8250" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=lineage-23.0" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=vendor/lineageos_pstar_defconfig" >> $GITHUB_ENV
+          echo "KERNEL_IMAGE_NAME=Image" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "CLANG_BRANCH=android12-release" >> $GITHUB_ENV
+          echo "CLANG_VERSION=r416183b1" >> $GITHUB_ENV
+          echo "EXTRA_CMDS=LD=ld.lld" >> $GITHUB_ENV
 
       - name: Prepare Environment
-        id: prepare
         run: |
           sudo apt-get update && sudo apt-get install -y git ccache build-essential zip curl zlib1g-dev python3 bc
           mkdir -p $GITHUB_WORKSPACE/workspace
-          echo "KERNEL_CONFIG=$(cat config.env | grep "KERNEL_CONFIG" | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "ARCH=$(cat config.env | grep "ARCH" | cut -d "=" -f 2)" >> $GITHUB_ENV
 
       - name: Download Toolchain
         run: |
           cd $GITHUB_WORKSPACE/workspace
-          CLANG_BRANCH=$(cat ../config.env | grep "CLANG_BRANCH" | cut -d "=" -f 2)
-          CLANG_VERSION=$(cat ../config.env | grep "CLANG_VERSION" | cut -d "=" -f 2)
           mkdir clang-aosp && cd clang-aosp
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/clang-${CLANG_VERSION}.tar.gz
-          tar -xzf clang-${CLANG_VERSION}.tar.gz
-
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz
+          tar -xzf clang-${{ env.CLANG_VERSION }}.tar.gz
       - name: Download Kernel Source
         run: |
           cd $GITHUB_WORKSPACE/workspace
-          KERNEL_SOURCE=$(cat ../config.env | grep "KERNEL_SOURCE" | cut -d "=" -f 2)
-          KERNEL_SOURCE_BRANCH=$(cat ../config.env | grep "KERNEL_SOURCE_BRANCH" | cut -d "=" -f 2)
-          git clone --depth=1 ${KERNEL_SOURCE} -b ${KERNEL_SOURCE_BRANCH} kernel
+          git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel
 
       - name: Generate Defconfig
         run: |
@@ -55,29 +44,29 @@ jobs:
               arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
           echo "Successfully created composite defconfig!"
 
+      # 步骤 6: 编译内核
       - name: Build Kernel
-        id: build
         run: |
           cd $GITHUB_WORKSPACE/workspace/kernel
           export PATH=$GITHUB_WORKSPACE/workspace/clang-aosp/bin:$PATH
           export KBUILD_BUILD_USER="機械生命拯救者"
           export KBUILD_BUILD_HOST="GitHub-Actions"
-          EXTRA_CMDS=$(cat ../../config.env | grep "EXTRA_CMDS" | cut -d "=" -f 2)
           
           make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${{ env.KERNEL_CONFIG }}
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${EXTRA_CMDS}
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${{ env.EXTRA_CMDS }}
 
+      # 步骤 7: 打包成 AnyKernel3 Zip
       - name: Package with AnyKernel3
         id: package
         run: |
           cd $GITHUB_WORKSPACE/workspace
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          KERNEL_IMAGE_NAME=$(cat ../config.env | grep "KERNEL_IMAGE_NAME" | cut -d "=" -f 2)
-          cp kernel/out/arch/${{ env.ARCH }}/boot/${KERNEL_IMAGE_NAME} AnyKernel3/
+          cp kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
           cd AnyKernel3
           zip -r9 Pstar-Kernel-$(date +%Y%m%d-%H%M).zip .
           echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
 
+      # 步骤 8: 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -85,12 +74,13 @@ jobs:
           path: ${{ steps.package.outputs.zip_path }}
 
       - name: Send Telegram Notification
+        if: always()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.CHAT_ID }}
           token: ${{ secrets.TG_BOT_TOKEN }}
           message: |
-            ✅ *pstar 内核编译并打包成功!*
+            ${{ job.status == 'success' && '✅ *pstar 内核编译成功!*' || '❌ *pstar 内核编译失败!*' }}
             
             *链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
