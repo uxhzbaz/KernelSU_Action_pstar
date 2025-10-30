@@ -1,4 +1,4 @@
-name: Build pstar Kernel CI (Final Strike)
+name: Build pstar Kernel CI (Final Version)
 
 on:
   workflow_dispatch:
@@ -18,9 +18,11 @@ jobs:
           echo "CLANG_BRANCH=android12-release" >> $GITHUB_ENV
           echo "CLANG_VERSION=r416183b1" >> $GITHUB_ENV
 
+      # --- 核心修改 1: 安装完整的 binutils 工具包 ---
       - name: Prepare Environment
         run: |
-          sudo apt-get update && sudo apt-get install -y git ccache build-essential zip curl zlib1g-dev python3 bc
+          sudo apt-get update
+          sudo apt-get install -y git ccache build-essential zip curl zlib1g-dev python3 bc binutils-aarch64-linux-gnu
           mkdir -p $GITHUB_WORKSPACE/workspace
 
       - name: Download Toolchain
@@ -43,8 +45,8 @@ jobs:
               arch/arm64/configs/vendor/ext_config/pstar-default.config \
               arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
           echo "Successfully created composite defconfig!"
-
-      # --- 核心修改在这里 ---
+          
+      # --- 核心修改 2: 添加参数解决最后的编译错误 ---
       - name: Build Kernel
         run: |
           cd $GITHUB_WORKSPACE/workspace/kernel
@@ -52,23 +54,17 @@ jobs:
           export KBUILD_BUILD_USER="機械生命拯救者"
           export KBUILD_BUILD_HOST="GitHub-Actions"
           
-          # 关键修改：
-          # 1. 'make olddefconfig': 解决交互式提问，自动用默认值补全配置。
-          # 2. 'HOSTCC=clang CC=clang LD=ld.lld': 确保所有编译步骤都使用 Clang 工具链。
-          # 3. 'KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end"': 解决致命的 GNU 扩展错误。
-          # 4. 'KBUILD_AFLAGS+="-EL"': 强制为汇编器添加旧版内核需要的-EL参数，绕过检查。
-          
           make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
           make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} olddefconfig
           make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
             HOSTCC=clang CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end" \
-            KBUILD_AFLAGS+="-EL"
-      
+            KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end -Wno-error=global-constructors -Wno-error=address-of-packed-member -Wno-error=tautological-constant-out-of-range-compare" \
+            CFLAGS+="-Wno-error=implicit-function-declaration -Wno-error=register-storage-class"
+
       - name: Package with AnyKernel3
         id: package
+        if: success() # 仅在编译成功时打包
         run: |
           cd $GITHUB_WORKSPACE/workspace
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
@@ -78,6 +74,7 @@ jobs:
           echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
+        if: success() # 仅在编译成功时上传
         uses: actions/upload-artifact@v4
         with:
           name: pstar-kernel-zip
