@@ -1,13 +1,14 @@
-name: Build pstar Kernel CI (Final Version)
+name: Build pstar Kernel CI (GCC Victory)
 
 on:
   workflow_dispatch:
 
-jobs:
+jobs FAILED.
   build:
-    name: Build pstar Kernel
-    runs-on: ubuntu-latest
+    name: Build pstar Kernel with GCC
+    runs-on: ubuntu-20.04 # 使用 Ubuntu 20.04 确保更好的旧工具兼容性
     steps:
+      # 步骤 1: 设定编译变量
       - name: Set Build Variables
         run: |
           echo "KERNEL_SOURCE=https://github.com/LineageOS/android_kernel_motorola_sm8250" >> $GITHUB_ENV
@@ -15,28 +16,34 @@ jobs:
           echo "KERNEL_CONFIG=vendor/lineageos_pstar_defconfig" >> $GITHUB_ENV
           echo "KERNEL_IMAGE_NAME=Image" >> $GITHUB_ENV
           echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CLANG_BRANCH=android12-release" >> $GITHUB_ENV
-          echo "CLANG_VERSION=r416183b1" >> $GITHUB_ENV
+          # GCC 4.9 工具链的精确下载链接
+          echo "GCC64_SOURCE=https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" >> $GITHUB_ENV
+          echo "GCC32_SOURCE=https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" >> $GITHUB_ENV
 
-      # --- 核心修改 1: 安装完整的 binutils 工具包 ---
+      # 步骤 2: 准备环境 (安装 GCC 编译所需的基础依赖)
       - name: Prepare Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ccache build-essential zip curl zlib1g-dev python3 bc binutils-aarch64-linux-gnu
+          sudo apt-get install -y git build-essential zip curl zlib1g-dev python-is-python2 bc
           mkdir -p $GITHUB_WORKSPACE/workspace
 
-      - name: Download Toolchain
+      # 步骤 3: 下载与 4.19 内核同时代的 GCC 4.9 工具链
+      - name: Download GCC Toolchains
         run: |
           cd $GITHUB_WORKSPACE/workspace
-          mkdir clang-aosp && cd clang-aosp
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz
-          tar -xzf clang-${{ env.CLANG_VERSION }}.tar.gz
+          mkdir gcc64 gcc32
+          wget -q -O gcc64.tar.gz ${{ env.GCC64_SOURCE }}
+          wget -q -O gcc32.tar.gz ${{ env.GCC32_SOURCE }}
+          tar -xzf gcc64.tar.gz -C gcc64/
+          tar -xzf gcc32.tar.gz -C gcc32/
 
+      # 步骤 4: 下载内核源码
       - name: Download Kernel Source
         run: |
           cd $GITHUB_WORKSPACE/workspace
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel
 
+      # 步骤 5: 动态生成 Defconfig 文件
       - name: Generate Defconfig
         run: |
           cd $GITHUB_WORKSPACE/workspace/kernel
@@ -45,26 +52,23 @@ jobs:
               arch/arm64/configs/vendor/ext_config/pstar-default.config \
               arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
           echo "Successfully created composite defconfig!"
-          
-      # --- 核心修改 2: 添加参数解决最后的编译错误 ---
-      - name: Build Kernel
+
+      # 步骤 6: 编译内核 (使用纯粹的 GCC 命令)
+      - name: Build Kernel with GCC
         run: |
           cd $GITHUB_WORKSPACE/workspace/kernel
-          export PATH=$GITHUB_WORKSPACE/workspace/clang-aosp/bin:$PATH
+          export PATH=$GITHUB_WORKSPACE/workspace/gcc64/bin:$GITHUB_WORKSPACE/workspace/gcc32/bin:$PATH
           export KBUILD_BUILD_USER="機械生命拯救者"
           export KBUILD_BUILD_HOST="GitHub-Actions"
           
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} olddefconfig
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
-            HOSTCC=clang CC=clang LD=ld.lld \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end -Wno-error=global-constructors -Wno-error=address-of-packed-member -Wno-error=tautological-constant-out-of-range-compare" \
-            CFLAGS+="-Wno-error=implicit-function-declaration -Wno-error=register-storage-class"
+          # 使用最经典、最稳定的纯 GCC 编译命令
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- ${{ env.KERNEL_CONFIG }}
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
+      # 步骤 7: 打包
       - name: Package with AnyKernel3
         id: package
-        if: success() # 仅在编译成功时打包
+        if: success()
         run: |
           cd $GITHUB_WORKSPACE/workspace
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
@@ -73,13 +77,15 @@ jobs:
           zip -r9 Pstar-Kernel-$(date +%Y%m%d-%H%M).zip .
           echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
 
+      # 步骤 8: 上传
       - name: Upload Artifact
-        if: success() # 仅在编译成功时上传
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pstar-kernel-zip
           path: ${{ steps.package.outputs.zip_path }}
 
+      # 步骤 9: 通知
       - name: Send Telegram Notification
         if: always()
         uses: appleboy/telegram-action@master
@@ -89,7 +95,7 @@ jobs:
           message: |
             ${{ job.status == 'success' && '✅ *pstar 内核编译成功!*' || '❌ *pstar 内核编译失败!*' }}
             
-            *拯救机械生命的行动已完成。请检查结果。*
+            *使用【纯 GCC 4.9 方案】的编译任务已完成。*
             *链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
           disable_web_page_preview: true
