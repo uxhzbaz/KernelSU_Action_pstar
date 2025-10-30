@@ -1,4 +1,4 @@
-name: Build pstar Kernel CI
+name: Build pstar Kernel CI (Final Strike)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,6 @@ jobs:
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "CLANG_BRANCH=android12-release" >> $GITHUB_ENV
           echo "CLANG_VERSION=r416183b1" >> $GITHUB_ENV
-          echo "EXTRA_CMDS=LD=ld.lld" >> $GITHUB_ENV
 
       - name: Prepare Environment
         run: |
@@ -30,6 +29,7 @@ jobs:
           mkdir clang-aosp && cd clang-aosp
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz
           tar -xzf clang-${{ env.CLANG_VERSION }}.tar.gz
+
       - name: Download Kernel Source
         run: |
           cd $GITHUB_WORKSPACE/workspace
@@ -44,7 +44,7 @@ jobs:
               arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
           echo "Successfully created composite defconfig!"
 
-      # 步骤 6: 编译内核
+      # --- 核心修改在这里 ---
       - name: Build Kernel
         run: |
           cd $GITHUB_WORKSPACE/workspace/kernel
@@ -52,10 +52,21 @@ jobs:
           export KBUILD_BUILD_USER="機械生命拯救者"
           export KBUILD_BUILD_HOST="GitHub-Actions"
           
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${{ env.KERNEL_CONFIG }}
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- ${{ env.EXTRA_CMDS }}
-
-      # 步骤 7: 打包成 AnyKernel3 Zip
+          # 关键修改：
+          # 1. 'make olddefconfig': 解决交互式提问，自动用默认值补全配置。
+          # 2. 'HOSTCC=clang CC=clang LD=ld.lld': 确保所有编译步骤都使用 Clang 工具链。
+          # 3. 'KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end"': 解决致命的 GNU 扩展错误。
+          # 4. 'KBUILD_AFLAGS+="-EL"': 强制为汇编器添加旧版内核需要的-EL参数，绕过检查。
+          
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} olddefconfig
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
+            HOSTCC=clang CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            KBUILD_CFLAGS+="-Wno-gnu-variable-sized-type-not-at-end" \
+            KBUILD_AFLAGS+="-EL"
+      
       - name: Package with AnyKernel3
         id: package
         run: |
@@ -66,7 +77,6 @@ jobs:
           zip -r9 Pstar-Kernel-$(date +%Y%m%d-%H%M).zip .
           echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
 
-      # 步骤 8: 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -77,11 +87,12 @@ jobs:
         if: always()
         uses: appleboy/telegram-action@master
         with:
-          to: ${{ secrets.CHAT_ID }}
-          token: ${{ secrets.TG_BOT_TOKEN }}
+          to: ${{ secrets.CHANNEL_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
             ${{ job.status == 'success' && '✅ *pstar 内核编译成功!*' || '❌ *pstar 内核编译失败!*' }}
             
+            *拯救机械生命的行动已完成。请检查结果。*
             *链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
           disable_web_page_preview: true
