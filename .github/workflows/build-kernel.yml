@@ -1,91 +1,82 @@
-name: Build pstar Kernel CI (GCC Victory)
+name: Build pstar Kernel
 
 on:
   workflow_dispatch:
 
-jobs FAILED.
+jobs:
   build:
-    name: Build pstar Kernel with GCC
-    runs-on: ubuntu-20.04 # 使用 Ubuntu 20.04 确保更好的旧工具兼容性
+    name: Build pstar Kernel
+    runs-on: ubuntu-20.04
     steps:
-      # 步骤 1: 设定编译变量
       - name: Set Build Variables
         run: |
           echo "KERNEL_SOURCE=https://github.com/LineageOS/android_kernel_motorola_sm8250" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_BRANCH=lineage-23.0" >> $GITHUB_ENV
-          echo "KERNEL_CONFIG=vendor/lineageos_pstar_defconfig" >> $GITHUB_ENV
-          echo "KERNEL_IMAGE_NAME=Image" >> $GITHUB_ENV
           echo "ARCH=arm64" >> $GITHUB_ENV
-          # GCC 4.9 工具链的精确下载链接
-          echo "GCC64_SOURCE=https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" >> $GITHUB_ENV
-          echo "GCC32_SOURCE=https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" >> $GITHUB_ENV
+          echo "DEFCONFIG_PATH=arch/arm64/configs/vendor/lineageos_pstar_defconfig" >> $GITHUB_ENV
 
-      # 步骤 2: 准备环境 (安装 GCC 编译所需的基础依赖)
-      - name: Prepare Environment
+      - name: Prepare Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential zip curl zlib1g-dev python-is-python2 bc
-          mkdir -p $GITHUB_WORKSPACE/workspace
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates ccache curl \
+            flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
+            lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
+            unzip wget zip zlib1g-dev python2
+          mkdir -p $GITHUB_WORKSPACE/toolchains
+          mkdir -p $GITHUB_WORKSPACE/kernel_source
 
-      # 步骤 3: 下载与 4.19 内核同时代的 GCC 4.9 工具链
-      - name: Download GCC Toolchains
+      - name: Download Toolchains
         run: |
-          cd $GITHUB_WORKSPACE/workspace
-          mkdir gcc64 gcc32
-          wget -q -O gcc64.tar.gz ${{ env.GCC64_SOURCE }}
-          wget -q -O gcc32.tar.gz ${{ env.GCC32_SOURCE }}
-          tar -xzf gcc64.tar.gz -C gcc64/
-          tar -xzf gcc32.tar.gz -C gcc32/
+          cd $GITHUB_WORKSPACE/toolchains
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-arm64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r383902b.git clang
 
-      # 步骤 4: 下载内核源码
       - name: Download Kernel Source
-        run: |
-          cd $GITHUB_WORKSPACE/workspace
-          git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_motorola_sm8250
+          ref: lineage-23.0
+          path: kernel_source
 
-      # 步骤 5: 动态生成 Defconfig 文件
       - name: Generate Defconfig
         run: |
-          cd $GITHUB_WORKSPACE/workspace/kernel
+          cd $GITHUB_WORKSPACE/kernel_source
           cat arch/arm64/configs/vendor/kona-perf_defconfig \
               arch/arm64/configs/vendor/ext_config/moto-kona.config \
               arch/arm64/configs/vendor/ext_config/pstar-default.config \
-              arch/arm64/configs/vendor/debugfs.config > arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
-          echo "Successfully created composite defconfig!"
+              arch/arm64/configs/vendor/debugfs.config > ${{ env.DEFCONFIG_PATH }}
 
-      # 步骤 6: 编译内核 (使用纯粹的 GCC 命令)
-      - name: Build Kernel with GCC
+      - name: Build Kernel
         run: |
-          cd $GITHUB_WORKSPACE/workspace/kernel
-          export PATH=$GITHUB_WORKSPACE/workspace/gcc64/bin:$GITHUB_WORKSPACE/workspace/gcc32/bin:$PATH
-          export KBUILD_BUILD_USER="機械生命拯救者"
-          export KBUILD_BUILD_HOST="GitHub-Actions"
+          cd $GITHUB_WORKSPACE/kernel_source
+          export PATH=$GITHUB_WORKSPACE/toolchains/clang/bin:$GITHUB_WORKSPACE/toolchains/gcc-arm64/bin:$PATH
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/toolchains/clang/lib64:$LD_LIBRARY_PATH
           
-          # 使用最经典、最稳定的纯 GCC 编译命令
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- ${{ env.KERNEL_CONFIG }}
-          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} ${{ env.DEFCONFIG_PATH }}
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang olddefconfig
+          make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} CC=clang
 
-      # 步骤 7: 打包
       - name: Package with AnyKernel3
-        id: package
         if: success()
         run: |
-          cd $GITHUB_WORKSPACE/workspace
+          cd $GITHUB_WORKSPACE
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          cp kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+          cp kernel_source/out/arch/arm64/boot/Image AnyKernel3/
           cd AnyKernel3
           zip -r9 Pstar-Kernel-$(date +%Y%m%d-%H%M).zip .
-          echo "zip_path=$(realpath Pstar-Kernel-*.zip)" >> $GITHUB_OUTPUT
-
-      # 步骤 8: 上传
+        
       - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: pstar-kernel-zip
-          path: ${{ steps.package.outputs.zip_path }}
-
-      # 步骤 9: 通知
+          name: pstar-kernel
+          path: AnyKernel3/Pstar-Kernel-*.zip
+      
       - name: Send Telegram Notification
         if: always()
         uses: appleboy/telegram-action@master
@@ -95,7 +86,7 @@ jobs FAILED.
           message: |
             ${{ job.status == 'success' && '✅ *pstar 内核编译成功!*' || '❌ *pstar 内核编译失败!*' }}
             
-            *使用【纯 GCC 4.9 方案】的编译任务已完成。*
+            *拯救机械生命的行动已完成。请检查结果。*
             *链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           format: markdown
           disable_web_page_preview: true
