@@ -1,461 +1,398 @@
-name: 构建 AVB 工具
+name: 构建 AVB 工具 (AOSP 环境)
 
 on:
-  workflow_dispatch:  # 只支持手动触发
+  workflow_dispatch:  # 支持手动触发
+  schedule:
+    - cron: '0 2 * * *'  # 每天 UTC 时间 2 点运行
   push:
     branches:
       - main
 
 env:
+  AOSP_BRANCH: "android-14.0.0_r55"  # 使用稳定的 AOSP 版本
   AVB_VERSION: "android-16.0.0_r3"
+  BUILD_TARGET: "aosp_x86_64-eng"    # 使用 x86_64 模拟器目标进行主机工具编译
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 使用 Ubuntu 22.04 以获得更好的 AOSP 兼容性
+    timeout-minutes: 180   # 设置 3 小时超时
     
     steps:
     # 1. 检出代码
     - name: 检出仓库代码
       uses: actions/checkout@v4
 
-    # 2. 安装系统依赖
-    - name: 安装系统依赖
+    # 2. 设置缓存 - 针对 AOSP 编译优化
+    - name: 缓存 AOSP 编译环境
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.ccache
+          prebuilts
+          .repo
+        key: ${{ runner.os }}-aosp-${{ env.AOSP_BRANCH }}-${{ hashFiles('**/repo') }}
+        restore-keys: |
+          ${{ runner.os }}-aosp-${{ env.AOSP_BRANCH }}-
+          ${{ runner.os }}-aosp-
+
+    # 3. 安装 AOSP 编译依赖
+    - name: 安装 AOSP 编译依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y \
+          git-core \
+          gnupg \
+          flex \
+          bison \
           build-essential \
-          git \
+          zip \
+          curl \
+          zlib1g-dev \
+          gcc-multilib \
+          g++-multilib \
+          libc6-dev-i386 \
+          libncurses5 \
+          lib32ncurses5-dev \
+          x11proto-core-dev \
+          libx11-dev \
+          lib32z1-dev \
+          libgl1-mesa-dev \
+          libxml2-utils \
+          xsltproc \
+          unzip \
+          fontconfig \
           python3 \
           python3-pip \
-          clang \
-          g++ \
-          cmake \
-          pkg-config \
+          openjdk-11-jdk \
+          ccache \
+          lzop \
+          imagemagick \
           libssl-dev \
-          libfmt-dev \
-          libgtest-dev \
-          libgmock-dev
+          tmate
 
-    # 3. 克隆 AVB 源码
-    - name: 克隆 AVB 源码
-      run: |
-        git clone https://android.googlesource.com/platform/external/avb
-        cd avb
-        git checkout ${{ env.AVB_VERSION }}
-        echo "AVB源码版本: ${{ env.AVB_VERSION }}"
+        # 设置 ccache
+        sudo mkdir -p /usr/local/ccache
+        sudo chmod 777 /usr/local/ccache
+        export USE_CCACHE=1
+        export CCACHE_DIR=/usr/local/ccache
+        ccache -M 50G
 
-    # 4. 编译 libavb 库
-    - name: 编译 libavb 库
+    # 4. 配置 Git
+    - name: 配置 Git
       run: |
-        cd avb
-        
-        # 创建 libavb 头文件目录结构
-        mkdir -p libavb/include/libavb
-        cp libavb/*.h libavb/include/libavb/ 2>/dev/null || true
-        
-        # 编译 libavb 静态库
-        mkdir -p build/libavb
-        cd build/libavb
-        
-        # 编译必要的源文件
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_sha256.c -o avb_sha256.o
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_rsa.c -o avb_rsa.o
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_util.c -o avb_util.o
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_crc32.c -o avb_crc32.o
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_crypto.c -o avb_crypto.o
-        gcc -c -I../../libavb -std=gnu99 ../../libavb/avb_sysdeps_posix.c -o avb_sysdeps_posix.o
-        
-        # 创建静态库
-        ar rcs libavb.a avb_sha256.o avb_rsa.o avb_util.o avb_crc32.o avb_crypto.o avb_sysdeps_posix.o
-        
-        # 复制到安装目录
-        mkdir -p ../../install/lib
-        mkdir -p ../../install/include/libavb
-        cp libavb.a ../../install/lib/
-        cp ../../libavb/*.h ../../install/include/libavb/ 2>/dev/null || true
-        
-        echo "libavb 库编译完成"
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        git config --global color.ui false
 
-    # 5. 创建 Android base 替代头文件
-    - name: 创建 Android base 头文件
+    # 5. 下载 repo 工具
+    - name: 下载 repo 工具
       run: |
-        cd avb
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
+
+    # 6. 初始化 AOSP 仓库 (最小化同步)
+    - name: 初始化 AOSP 仓库
+      run: |
+        mkdir aosp
+        cd aosp
+        # 只同步必要的项目来编译 AVB 工具
+        repo init -u https://android.googlesource.com/platform/manifest -b ${{ env.AOSP_BRANCH }} --depth=1
         
-        # 创建 android-base 替代头文件
-        mkdir -p install/include/android-base
-        cat > install/include/android-base/properties.h << 'EOF'
-        #ifndef ANDROID_BASE_PROPERTIES_H
-        #define ANDROID_BASE_PROPERTIES_H
-        
-        #include <string>
-        
-        namespace android {
-        namespace base {
-        
-        std::string GetProperty(const std::string& key, const std::string& default_value);
-        bool GetBoolProperty(const std::string& key, bool default_value);
-        int GetIntProperty(const std::string& key, int default_value);
-        
-        }  // namespace base
-        }  // namespace android
-        
-        #endif  // ANDROID_BASE_PROPERTIES_H
-        EOF
-        
-        # 创建实现文件
-        cat > install/include/android-base/properties.cpp << 'EOF'
-        #include "properties.h"
-        #include <cstdlib>
-        #include <cstring>
-        
-        namespace android {
-        namespace base {
-        
-        std::string GetProperty(const std::string& key, const std::string& default_value) {
-            // 简化实现：返回默认值
-            return default_value;
-        }
-        
-        bool GetBoolProperty(const std::string& key, bool default_value) {
-            return default_value;
-        }
-        
-        int GetIntProperty(const std::string& key, int default_value) {
-            return default_value;
-        }
-        
-        }  // namespace base
-        }  // namespace android
+        # 创建本地清单只同步必要的项目
+        mkdir -p .repo/local_manifests
+        cat > .repo/local_manifests/avb_only.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <manifest>
+          <project path="external/avb" name="platform/external/avb" />
+          <project path="system/core" name="platform/system/core" />
+          <project path="system/extras" name="platform/system/extras" />
+          <project path="system/libbase" name="platform/system/libbase" />
+          <project path="system/logging" name="platform/system/logging" />
+          <project path="system/libcutils" name="platform/system/libcutils" />
+          <project path="system/libutils" name="platform/system/libutils" />
+          <project path="build/make" name="platform/build/make" />
+          <project path="prebuilts/build-tools" name="platform/prebuilts/build-tools" />
+          <project path="prebuilts/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" />
+          <project path="prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" name="platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" />
+          <project path="prebuilts/sdk" name="platform/prebuilts/sdk" />
+        </manifest>
         EOF
 
-    # 6. 编译 avbtool (Python 工具)
+        # 同步项目
+        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+        
+        echo "AOSP 仓库初始化完成"
+
+    # 7. 切换到特定 AVB 版本
+    - name: 切换到 AVB 特定版本
+      run: |
+        cd aosp/external/avb
+        git fetch --tags
+        git checkout ${{ env.AVB_VERSION }} || echo "使用默认分支版本"
+        cd ../..
+        echo "AVB 版本: ${{ env.AVB_VERSION }}"
+
+    # 8. 设置 AOSP 构建环境
+    - name: 设置 AOSP 构建环境
+      run: |
+        cd aosp
+        
+        # 设置构建环境
+        source build/envsetup.sh
+        
+        # 选择构建目标
+        lunch ${{ env.BUILD_TARGET }}
+        
+        # 设置 ccache
+        export USE_CCACHE=1
+        export CCACHE_DIR=/usr/local/ccache
+        
+        # 验证环境
+        which make
+        which clang
+        echo "AOSP 构建环境设置完成"
+
+    # 9. 编译 avbtool (主机工具)
     - name: 编译 avbtool
       run: |
-        cd avb
+        cd aosp
+        source build/envsetup.sh
+        lunch ${{ env.BUILD_TARGET }}
         
-        # 检查 avbtool 是否存在
-        if [ -f "avbtool.py" ]; then
-          echo "找到 avbtool.py"
-          
-          # 安装 Python 依赖
-          pip3 install cryptography
-          
-          # 测试 avbtool 是否正常工作
-          python3 avbtool.py --version || echo "avbtool 版本检查跳过"
-          
-          # 创建输出目录
-          mkdir -p ../output/bin
-          cp avbtool.py ../output/bin/
-          chmod +x ../output/bin/avbtool.py
-          
-          # 创建可直接执行的avbtool
-          echo '#!/usr/bin/env python3' > ../output/bin/avbtool
-          cat avbtool.py >> ../output/bin/avbtool
-          chmod +x ../output/bin/avbtool
-          
-          echo "avbtool 编译完成"
+        # 编译 avbtool 主机工具
+        m -j$(nproc) avbtool
+        
+        echo "avbtool 编译完成"
+        
+        # 检查输出
+        if [ -f "out/host/linux-x86/bin/avbtool" ]; then
+          echo "✅ avbtool 编译成功"
+          ls -la out/host/linux-x86/bin/avbtool
         else
-          echo "错误: 未找到 avbtool.py"
+          echo "❌ avbtool 编译失败"
           exit 1
         fi
 
-    # 7. 修复 avbctl 编译 - 简化版本
+    # 10. 编译 avbctl (主机工具)
     - name: 编译 avbctl
-      continue-on-error: true
       run: |
-        cd avb
+        cd aosp
+        source build/envsetup.sh
+        lunch ${{ env.BUILD_TARGET }}
         
-        # 检查 avbctl 源码是否存在
-        if [ -f "tools/avbctl/avbctl.cc" ]; then
-          echo "找到 avbctl 源码"
-          
-          # 创建简化的 avb_ops_user.h
-          mkdir -p install/include/libavb_user
-          cat > install/include/libavb_user/avb_ops_user.h << 'EOF'
-          #ifndef AVB_OPS_USER_H_
-          #define AVB_OPS_USER_H_
-          
-          #include <libavb/libavb.h>
-          
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          
-          AvbOps* avb_ops_user_new(void);
-          void avb_ops_user_free(AvbOps* ops);
-          
-          #ifdef __cplusplus
-          }
-          #endif
-          
-          #endif  // AVB_OPS_USER_H_
-          EOF
-          
-          # 创建简化的头文件
-          cat > install/include/libavb_user/avb_user_verification.h << 'EOF'
-          #ifndef AVB_USER_VERIFICATION_H_
-          #define AVB_USER_VERIFICATION_H_
-          
-          #include <libavb/libavb.h>
-          
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          
-          bool avb_user_verification_get(AvbOps* ops,
-                                         const char* ab_suffix,
-                                         bool* out_enabled);
-          bool avb_user_verification_set(AvbOps* ops,
-                                         const char* ab_suffix,
-                                         bool enable);
-          
-          #ifdef __cplusplus
-          }
-          #endif
-          
-          #endif  // AVB_USER_VERIFICATION_H_
-          EOF
-          
-          cat > install/include/libavb_user/avb_user_verity.h << 'EOF'
-          #ifndef AVB_USER_VERITY_H_
-          #define AVB_USER_VERITY_H_
-          
-          #include <libavb/libavb.h>
-          
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          
-          bool avb_user_verity_get(AvbOps* ops,
-                                   const char* ab_suffix,
-                                   bool* out_enabled);
-          bool avb_user_verity_set(AvbOps* ops,
-                                   const char* ab_suffix,
-                                   bool enable);
-          
-          #ifdef __cplusplus
-          }
-          #endif
-          
-          #endif  // AVB_USER_VERITY_H_
-          EOF
-          
-          # 创建简化的实现文件
-          cat > install/libavb_user_stubs.cpp << 'EOF'
-          #include "libavb_user/avb_ops_user.h"
-          #include "libavb_user/avb_user_verification.h"
-          #include "libavb_user/avb_user_verity.h"
-          #include <cstdio>
-          
-          AvbOps* avb_ops_user_new(void) {
-              printf("avb_ops_user_new: stub implementation\\n");
-              return nullptr;
-          }
-          
-          void avb_ops_user_free(AvbOps* ops) {
-              printf("avb_ops_user_free: stub implementation\\n");
-          }
-          
-          bool avb_user_verification_get(AvbOps* ops,
-                                         const char* ab_suffix,
-                                         bool* out_enabled) {
-              printf("avb_user_verification_get: stub implementation\\n");
-              *out_enabled = false;
-              return true;
-          }
-          
-          bool avb_user_verification_set(AvbOps* ops,
-                                         const char* ab_suffix,
-                                         bool enable) {
-              printf("avb_user_verification_set: stub implementation\\n");
-              return true;
-          }
-          
-          bool avb_user_verity_get(AvbOps* ops,
-                                   const char* ab_suffix,
-                                   bool* out_enabled) {
-              printf("avb_user_verity_get: stub implementation\\n");
-              *out_enabled = false;
-              return true;
-          }
-          
-          bool avb_user_verity_set(AvbOps* ops,
-                                   const char* ab_suffix,
-                                   bool enable) {
-              printf("avb_user_verity_set: stub implementation\\n");
-              return true;
-          }
-          EOF
-          
-          # 创建构建目录
-          mkdir -p build/avbctl
-          cd build/avbctl
-          
-          # 编译 stub 实现
-          g++ -c -I../../install/include -std=c++17 ../../install/libavb_user_stubs.cpp -o libavb_user_stubs.o
-          
-          # 编译 avbctl 主程序（移除 Android 特定依赖）
-          g++ -std=c++17 \
-            -I../../install/include \
-            -I../../install/include/libavb \
-            -I../../install/include/libavb_user \
-            -I../../install/include/android-base \
-            -o avbctl \
-            ../../tools/avbctl/avbctl.cc \
-            libavb_user_stubs.o \
-            ../../install/lib/libavb.a \
-            -lssl -lcrypto -lpthread
-          
-          if [ -f "avbctl" ]; then
-            # 复制到输出目录
-            mkdir -p ../../output/bin
-            cp avbctl ../../output/bin/
-            chmod +x ../../output/bin/avbctl
-            echo "avbctl 编译成功（使用 stub 实现）"
-          else
-            echo "警告: avbctl 编译失败"
-          fi
+        # 编译 avbctl 主机工具
+        m -j$(nproc) avbctl
+        
+        echo "avbctl 编译完成"
+        
+        # 检查输出
+        if [ -f "out/host/linux-x86/bin/avbctl" ]; then
+          echo "✅ avbctl 编译成功"
+          ls -la out/host/linux-x86/bin/avbctl
         else
-          echo "错误: 未找到 avbctl 源码"
+          echo "❌ avbctl 编译失败"
+          # 尝试查找其他可能的位置
+          find out/ -name "avbctl" -type f 2>/dev/null || echo "未找到 avbctl 二进制文件"
+          exit 1
         fi
 
-    # 8. 创建最小化的 avbctl（如果上述方法失败）
-    - name: 创建最小化 avbctl
-      if: failure() && steps.build_avbctl.outcome == 'failure'
+    # 11. 收集编译输出
+    - name: 收集编译输出
       run: |
-        cd avb
+        mkdir -p output/bin
         
-        # 创建最小化的 avbctl 实现
-        cat > output/bin/avbctl_minimal << 'EOF'
-        #!/bin/bash
-        echo "avbctl (minimal stub)"
-        echo "This is a minimal implementation for testing purposes"
-        echo ""
-        echo "Available commands:"
-        echo "  get-verity           - Stub: always returns 'disabled'"
-        echo "  disable-verity       - Stub: no operation"
-        echo "  enable-verity        - Stub: no operation"
-        echo "  get-verification     - Stub: always returns 'disabled'"
-        echo "  disable-verification - Stub: no operation"
-        echo "  enable-verification  - Stub: no operation"
-        echo ""
-        echo "Note: This is a stub implementation for testing."
-        echo "For full functionality, compile in AOSP environment."
-        
-        case "$1" in
-            "get-verity")
-                echo "verity is disabled (stub)"
-                ;;
-            "disable-verity")
-                echo "Successfully disabled verity (stub)"
-                ;;
-            "enable-verity")
-                echo "Successfully enabled verity (stub)"
-                ;;
-            "get-verification")
-                echo "verification is disabled (stub)"
-                ;;
-            "disable-verification")
-                echo "Successfully disabled verification (stub)"
-                ;;
-            "enable-verification")
-                echo "Successfully enabled verification (stub)"
-                ;;
-            *)
-                echo "Unknown command: $1"
-                exit 1
-                ;;
-        esac
-        EOF
-        
-        chmod +x output/bin/avbctl_minimal
-        # 如果之前的编译失败，使用这个最小化版本
-        if [ ! -f "output/bin/avbctl" ]; then
-          cp output/bin/avbctl_minimal output/bin/avbctl
-          echo "使用最小化 avbctl 实现"
-        fi
-
-    # 9. 验证编译结果
-    - name: 验证编译结果
-      run: |
-        echo "编译结果:"
-        echo "=========="
-        
-        if [ -f "output/bin/avbtool" ]; then
-          echo "✅ avbtool - 编译成功"
-          echo "文件位置: output/bin/avbtool"
-          echo "文件大小: $(wc -c < output/bin/avbtool) 字节"
-          # 测试基本功能
-          echo "测试 avbtool:"
-          python3 output/bin/avbtool --version || echo "版本检查失败（预期中）"
-        else
-          echo "❌ avbtool - 编译失败"
+        # 复制 avbtool
+        if [ -f "aosp/out/host/linux-x86/bin/avbtool" ]; then
+          cp aosp/out/host/linux-x86/bin/avbtool output/bin/
+          echo "✅ 已复制 avbtool"
         fi
         
-        if [ -f "output/bin/avbctl" ]; then
-          echo "✅ avbctl - 编译成功"  
-          echo "文件位置: output/bin/avbctl"
-          echo "文件大小: $(wc -c < output/bin/avbctl) 字节"
-          # 测试基本功能
-          echo "测试 avbctl:"
-          ./output/bin/avbctl --help || ./output/bin/avbctl get-verity || echo "功能测试失败（预期中）"
-        else
-          echo "❌ avbctl - 编译失败"
+        # 复制 avbctl
+        if [ -f "aosp/out/host/linux-x86/bin/avbctl" ]; then
+          cp aosp/out/host/linux-x86/bin/avbctl output/bin/
+          echo "✅ 已复制 avbctl"
         fi
         
-        echo ""
+        # 检查并复制可能的依赖库
+        mkdir -p output/lib
+        find aosp/out/host/linux-x86/lib64 -name "*.so" -exec cp {} output/lib/ \; 2>/dev/null || true
+        
+        # 显示输出内容
         echo "输出目录内容:"
         find output/ -type f
 
-    # 10. 打包工具
-    - name: 打包工具
+    # 12. 创建版本信息
+    - name: 创建版本信息
       run: |
-        # 创建版本信息
         DATE_STAMP=$(date +%Y%m%d)
-        mkdir -p output/
         
         cat > output/version.txt << EOF
-        AVB Tools Build
-        Version: ${{ env.AVB_VERSION }}
-        Build Date: $(date)
+        AVB Tools - AOSP 环境编译
+        =========================
         
-        包含的工具:
-        - avbtool: $(if [ -f "output/bin/avbtool" ]; then echo "成功"; else echo "失败"; fi)
-        - avbctl: $(if [ -f "output/bin/avbctl" ]; then echo "成功（可能为stub实现）"; else echo "失败"; fi)
+        编译信息:
+        - AOSP 版本: ${{ env.AOSP_BRANCH }}
+        - AVB 版本: ${{ env.AVB_VERSION }}
+        - 构建目标: ${{ env.BUILD_TARGET }}
+        - 构建日期: $(date -u)
+        - 构建 SHA: ${{ github.sha }}
         
-        注意:
-        - avbtool: 完整功能的 Python 工具
-        - avbctl: 可能使用 stub 实现，在非 AOSP 环境中功能受限
+        包含工具:
+        - avbtool: $(if [ -f "output/bin/avbtool" ]; then echo "✅ 成功"; else echo "❌ 失败"; fi)
+        - avbctl: $(if [ -f "output/bin/avbctl" ]; then echo "✅ 成功"; else echo "❌ 失败"; fi)
+        
+        使用说明:
+        这些工具在完整的 AOSP 环境中编译，包含所有必要的依赖库。
+        建议在类似的 Linux 环境中使用。
         EOF
         
-        # 打包
-        tar -czf avb-tools-${{ env.AVB_VERSION }}-${DATE_STAMP}.tar.gz output/
-        echo "打包完成: avb-tools-${{ env.AVB_VERSION }}-${DATE_STAMP}.tar.gz"
+        # 创建 README
+        cat > output/README.md << 'EOF'
+        # AVB Tools - AOSP 编译版本
+        
+        ## 工具说明
+        
+        ### avbtool
+        Android Verified Boot 工具，用于处理 vbmeta 镜像。
+        
+        **使用方法:**
+        ```bash
+        ./bin/avbtool --version
+        ./bin/avbtool make_vbmeta_image --help
+        ```
+        
+        ### avbctl  
+        AVB 控制工具，用于管理设备上的 AVB 设置。
+        
+        **使用方法:**
+        ```bash
+        ./bin/avbctl get-verity
+        ./bin/avbctl get-verification
+        ```
+        
+        ## 环境要求
+        - Linux 环境 (Ubuntu/CentOS 等)
+        - 可能需要安装额外的运行时库
+        
+        ## 编译信息
+        此版本在完整的 AOSP 环境中编译，确保工具的功能完整性。
+        EOF
 
-    # 11. 上传制品
+    # 13. 打包工具
+    - name: 打包工具
+      run: |
+        DATE_STAMP=$(date +%Y%m%d)
+        PACKAGE_NAME="avb-tools-aosp-${{ env.AVB_VERSION }}-${DATE_STAMP}"
+        
+        # 创建打包目录结构
+        mkdir -p packages
+        tar -czf packages/${PACKAGE_NAME}.tar.gz output/
+        
+        # 显示包信息
+        echo "打包完成: ${PACKAGE_NAME}.tar.gz"
+        ls -la packages/
+        
+        # 设置输出变量
+        echo "PACKAGE_NAME=${PACKAGE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+        echo "DATE_STAMP=${DATE_STAMP}" >> $GITHUB_OUTPUT
+
+    # 14. 上传制品
     - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
-        name: avb-tools
+        name: avb-tools-aosp
         path: |
           output/
-          avb-tools-*.tar.gz
+          packages/
         retention-days: 30
 
-    # 12. Telegram 通知
+    # 15. 创建 GitHub Release
+    - name: 创建 Release
+      if: success()
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: avb-tools-${{ env.AVB_VERSION }}-${{ steps.create_package.outputs.DATE_STAMP }}
+        name: AVB Tools ${{ env.AVB_VERSION }} (AOSP Build)
+        body: |
+          # AVB Tools - AOSP 环境编译版本
+          
+          ## 编译信息
+          - **AOSP 版本**: ${{ env.AOSP_BRANCH }}
+          - **AVB 版本**: ${{ env.AVB_VERSION }}
+          - **构建日期**: ${{ steps.create_package.outputs.DATE_STAMP }}
+          - **构建环境**: Ubuntu 22.04 + 完整 AOSP 环境
+          
+          ## 包含工具
+          - ✅ avbtool - AVB 镜像处理工具
+          - ✅ avbctl - AVB 控制工具
+          
+          ## 使用说明
+          这些工具在完整的 AOSP 环境中编译，包含所有必要的依赖。
+          解压后请查看 README.md 了解详细使用方法。
+        files: packages/avb-tools-aosp-${{ env.AVB_VERSION }}-${{ steps.create_package.outputs.DATE_STAMP }}.tar.gz
+        draft: false
+        prerelease: false
+
+    # 16. Telegram 通知
     - name: 发送 Telegram 通知
       if: always()
       uses: appleboy/telegram-action@master
       with:
         to: ${{ secrets.CHAT_ID }}
-        token: ${{ secrets.BOT_TOKEN }}
+        token: ${{ secrets.TG_BOT_TOKEN }}
         message: |
-          ${{ job.status == 'success' && '✅ *AVB 工具编译完成!*' || '❌ *AVB 工具编译失败!*' }}
+          ${{ job.status == 'success' && '✅ *AVB 工具 AOSP 编译成功!*' || '❌ *AVB 工具编译失败!*' }}
           
-          *版本*: ${{ env.AVB_VERSION }}
-          *构建结果*:
-          - avbtool: $(if [ -f "output/bin/avbtool" ]; then echo "✅ 成功"; else echo "❌ 失败"; fi)
-          - avbctl: $(if [ -f "output/bin/avbctl" ]; then echo "✅ 成功（可能为stub）"; else echo "❌ 失败"; fi)
+          *版本信息*:
+          - AOSP: ${{ env.AOSP_BRANCH }}
+          - AVB: ${{ env.AVB_VERSION }}
+          
+          *编译结果*:
+          - avbtool: $(if [ -f "output/bin/avbtool" ]; then echo '✅ 成功'; else echo '❌ 失败'; fi)
+          - avbctl: $(if [ -f "output/bin/avbctl" ]; then echo '✅ 成功'; else echo '❌ 失败'; fi)
           
           *工作流链接*: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         format: markdown
+
+    # 17. 构建总结
+    - name: 构建总结
+      if: always()
+      run: |
+        echo "## AOSP 环境 AVB 工具构建总结" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 环境信息" >> $GITHUB_STEP_SUMMARY
+        echo "- **AOSP 版本**: ${{ env.AOSP_BRANCH }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **AVB 版本**: ${{ env.AVB_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **构建目标**: ${{ env.BUILD_TARGET }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 编译结果" >> $GITHUB_STEP_SUMMARY
+        echo "| 工具 | 状态 | 说明 |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "output/bin/avbtool" ]; then
+          echo "| avbtool | ✅ 成功 | AVB 镜像处理工具 |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| avbtool | ❌ 失败 | AVB 镜像处理工具 |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "output/bin/avbctl" ]; then
+          echo "| avbctl | ✅ 成功 | AVB 控制工具 |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| avbctl | ❌ 失败 | AVB 控制工具 |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ **AOSP 环境构建成功完成**" >> $GITHUB_STEP_SUMMARY
+          echo "**制品文件**: avb-tools-aosp-${{ env.AVB_VERSION }}-${{ steps.create_package.outputs.DATE_STAMP }}.tar.gz" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **AOSP 环境构建失败**" >> $GITHUB_STEP_SUMMARY
+          echo "请检查 AOSP 环境设置和依赖安装。" >> $GITHUB_STEP_SUMMARY
+        fi
