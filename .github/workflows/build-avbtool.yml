@@ -185,15 +185,3 @@ jobs:
           output/
           avb-tools-*.tar.gz
         retention-days: 30
-
-
-    - name: 发送 Telegram 通知
-  if: always()
-  uses: appleboy/telegram-action@master
-  with:
-    to: ${{ secrets.CHAT_ID }}
-    token: ${{ secrets.TG_BOT_TOKEN }}
-    message: |
-      ${{ job.status == 'success' && '✅ AVB 工具编译完成!' || '❌ AVB 工具编译失败!' }}
-      版本: ${{ env.AVB_VERSION }}
-      详情: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
