@@ -185,8 +185,9 @@ jobs:
           output/
           avb-tools-*.tar.gz
         retention-days: 30
-# 可选：Telegram 通知
-- name: 发送 Telegram 通知
+
+
+    - name: 发送 Telegram 通知
   if: always()
   uses: appleboy/telegram-action@master
   with:
