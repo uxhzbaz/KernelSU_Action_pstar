@@ -1,1 +1,238 @@
-Android Verified Boot
+name: Build AVB Tools
+
+on:
+  schedule:
+    - cron: '0 0 */3 * *'  # 每3天运行一次
+  workflow_dispatch:  # 支持手动触发
+  push:
+    branches:
+      - main
+
+env:
+  NDK_VERSION: 'r21e'
+  PYTHON_VERSION: '3.8'
+
+jobs:
+  build:
+    name: Build AVB Tools
+    runs-on: ubuntu-20.04
+    
+    steps:
+    # 步骤1: 检出代码
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    # 步骤2: 设置缓存
+    - name: Cache NDK and build artifacts
+      uses: actions/cache@v3
+      id: cache
+      with:
+        path: |
+          ~/.android/ndk
+          avb-build/
+          avb-tools-*.zip
+        key: ${{ runner.os }}-avb-${{ env.NDK_VERSION }}-${{ hashFiles('**/Android.bp', '**/Makefile', '**/*.cc', '**/*.cpp') }}
+        
+    # 步骤3: 安装系统依赖
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git curl wget unzip zip \
+          python3 python3-pip \
+          build-essential cmake ninja-build \
+          clang gcc g++ \
+          libssl-dev
+
+    # 步骤4: 设置Python
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    # 步骤5: 下载并设置Android NDK
+    - name: Setup Android NDK
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/.android/ndk
+        cd ~/.android/ndk
+        wget -q https://dl.google.com/android/repository/android-ndk-${{ env.NDK_VERSION }}-linux-x86_64.zip
+        unzip -q android-ndk-${{ env.NDK_VERSION }}-linux-x86_64.zip
+        rm android-ndk-${{ env.NDK_VERSION }}-linux-x86_64.zip
+        echo "NDK_PATH=$(realpath android-ndk-${{ env.NDK_VERSION }})" >> $GITHUB_ENV
+
+    # 步骤6: 获取最新的AVB版本信息
+    - name: Get latest AVB version
+      id: get_version
+      run: |
+        # 尝试从git标签获取版本
+        git fetch --tags
+        LATEST_TAG=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.1")
+        if [ "$LATEST_TAG" = "v0.0.1" ]; then
+          # 如果没有标签，使用commit hash
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          VERSION="dev-$COMMIT_HASH"
+          VERSION_CODE=$(date +%Y%m%d)
+        else
+          VERSION=$LATEST_TAG
+          # 从标签提取版本号，如 android-16.0.0_r3 -> 16.0.0.3
+          VERSION_CODE=$(echo $LATEST_TAG | sed 's/android-//' | sed 's/_/./g' | sed 's/[^0-9.]//g')
+        fi
+        
+        echo "AVB_VERSION=$VERSION" >> $GITHUB_ENV
+        echo "AVB_VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
+        echo "BUILD_DATE=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
+
+    # 步骤7: 编译avbtool (Python工具)
+    - name: Build avbtool
+      run: |
+        mkdir -p avb-build
+        
+        # 检查avbtool.py是否存在
+        if [ ! -f "avbtool.py" ]; then
+          echo "::error::avbtool.py not found!"
+          exit 1
+        fi
+        
+        # 安装Python依赖
+        pip3 install cryptography
+        
+        # 复制avbtool和相关文件
+        cp avbtool.py avb-build/
+        cp -r libavb avb-build/
+        
+        # 创建启动脚本
+        cat > avb-build/avbtool << 'EOF'
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/avbtool.py" "$@"
+EOF
+        
+        chmod +x avb-build/avbtool
+        echo "✅ avbtool built successfully"
+
+    # 步骤8: 编译avbctl (C++工具)
+    - name: Build avbctl
+      run: |
+        cd avb-build
+        
+        # 设置NDK环境变量
+        export NDK_HOME="${{ env.NDK_PATH }}"
+        export TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+        export TARGET=aarch64-linux-android
+        export API=21
+        
+        # 设置编译器路径
+        export CC=$TOOLCHAIN/bin/$TARGET$API-clang
+        export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
+        
+        # 创建编译目录
+        mkdir -p obj lib bin
+        
+        # 编译libavb (静态库)
+        echo "🔨 Building libavb..."
+        for src in ../libavb/*.c; do
+          if [ -f "$src" ]; then
+            base=$(basename "$src" .c)
+            $CC -I../libavb -I../libavb_user -c "$src" -o "obj/libavb_$base.o"
+          fi
+        done
+        
+        # 编译libavb_user (静态库)
+        echo "🔨 Building libavb_user..."
+        for src in ../libavb_user/*.c; do
+          if [ -f "$src" ]; then
+            base=$(basename "$src" .c)
+            $CC -I../libavb -I../libavb_user -c "$src" -o "obj/libavb_user_$base.o"
+          fi
+        done
+        
+        # 如果有C++文件，编译libavb_user的C++部分
+        if [ -f "../libavb_user/avb_ops_user.cpp" ]; then
+          $CXX -I../libavb -I../libavb_user -std=c++11 -c "../libavb_user/avb_ops_user.cpp" -o "obj/avb_ops_user.o"
+        fi
+        
+        # 创建静态库
+        ar rcs lib/libavb.a obj/libavb_*.o
+        ar rcs lib/libavb_user.a obj/libavb_user_*.o obj/avb_ops_user.o 2>/dev/null || true
+        
+        # 编译avbctl
+        echo "🔨 Building avbctl..."
+        $CXX -I../libavb -I../libavb_user -I../boot_control \
+             -std=c++11 \
+             ../tools/avbctl/avbctl.cc \
+             -L./lib -lavb_user -lavb -lstdc++ -static \
+             -o bin/avbctl
+        
+        # 检查是否编译成功
+        if [ -f "bin/avbctl" ]; then
+          echo "✅ avbctl built successfully"
+          file bin/avbctl
+        else
+          echo "::warning::avbctl compilation may have failed, continuing..."
+        fi
+
+    # 步骤9: 备用编译方法 - 使用主机编译器
+    - name: Build avbctl (host fallback)
+      if: failure()  # 只有在NDK编译失败时才运行
+      run: |
+        cd avb-build
+        
+        echo "🔄 Trying host compilation for avbctl..."
+        
+        # 使用主机编译器
+        g++ -I../libavb -I../libavb_user -I../boot_control \
+            -std=c++11 \
+            ../tools/avbctl/avbctl.cc \
+            -lstdc++ -static \
+            -o bin/avbctl-host
+        
+        if [ -f "bin/avbctl-host" ]; then
+          mv bin/avbctl-host bin/avbctl
+          echo "✅ avbctl (host) built successfully"
+          file bin/avbctl
+        else
+          echo "::warning::Host compilation also failed, continuing without avbctl"
+        fi
+
+    # 步骤10: 创建工具包
+    - name: Create tools package
+      run: |
+        mkdir -p avb-tools-${{ env.AVB_VERSION }}
+        
+        # 复制avbtool
+        cp avb-build/avbtool avb-tools-${{ env.AVB_VERSION }}/
+        cp avb-build/avbtool.py avb-tools-${{ env.AVB_VERSION }}/
+        cp -r avb-build/libavb avb-tools-${{ env.AVB_VERSION }}/
+        
+        # 复制avbctl (如果存在)
+        if [ -f "avb-build/bin/avbctl" ]; then
+          cp avb-build/bin/avbctl avb-tools-${{ env.AVB_VERSION }}/
+        fi
+        
+        # 创建版本信息文件
+        cat > avb-tools-${{ env.AVB_VERSION }}/VERSION.txt << EOF
+AVB Tools Build Information
+Version: ${{ env.AVB_VERSION }}
+Version Code: ${{ env.AVB_VERSION_CODE }}
+Build Date: ${{ env.BUILD_DATE }}
+Source: https://android.googlesource.com/platform/external/avb
+GitHub Actions Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+EOF
+
+        # 创建README
+        cat > avb-tools-${{ env.AVB_VERSION }}/README.md << 'EOF'
+# AVB Tools
+
+This package contains compiled AVB (Android Verified Boot) tools.
+
+## Included Tools
+
+- `avbtool`: Python-based tool for working with vbmeta images
+- `avbctl`: C++ tool for controlling AVB settings on devices
+
+## Usage
+
+### avbtool
+```bash
+./avbtool --help
