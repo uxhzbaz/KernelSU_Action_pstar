@@ -1,14 +1,14 @@
-name: Static Dropbearmulti for Android ARM64
+name: Build Static Dropbearmulti for Android ARM64
 
 on:
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
   push:
-    tags: # 在推送特定标签时触发，例如 'dropbear-*'
+    tags:
       - 'dropbear-*'
 
 env:
-  DROPBEAR_VERSION: "DROPBEAR_2025.88" # 定义要使用的 Dropbear 版本
-  TARGET_ARCH: "aarch64-linux-android" # 目标架构
+  DROPBEAR_VERSION: "DROPBEAR_2025.88"
+  TARGET_ARCH: "aarch64-linux-android"
 
 jobs:
   build:
@@ -52,7 +52,6 @@ jobs:
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
 
-          # 设置 ccache 包装的编译器以加速后续编译
           export CC="ccache $CC"
           echo "CCACHE_ENABLED=$CC" >> $GITHUB_ENV
 
@@ -60,10 +59,9 @@ jobs:
         run: |
           cd "$DROPBEAR_SRC_DIR"
 
-          # 静态链接配置，禁用共享库以减少依赖和体积[citation:2]
           ./configure --host=$TARGET_ARCH \
             --enable-static \
-            --disable-shared \
+            --disable-password-auth \
             --disable-syslog \
             --disable-lastlog \
             --disable-utmp \
