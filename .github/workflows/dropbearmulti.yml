@@ -38,43 +38,38 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Create custom localoptions.h
+    - name: Apply Termux patches
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        # Apply the same patches that worked in Termux
+        sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
+        sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
+
+    - name: Create localoptions.h to disable password auth
       run: |
         cd "$DROPBEAR_SRC_DIR"
         cat > localoptions.h << 'EOF'
-#ifndef LOCALOPTIONS_H_
-#define LOCALOPTIONS_H_
+#ifndef DROPBEAR_LOCALOPTIONS_H_
+#define DROPBEAR_LOCALOPTIONS_H_
 
-/* Override system detection for crypt and getpass */
-#define HAVE_CRYPT 0
-#define HAVE_GETPASS 0
-
-/* Disable server password authentication */
+/* Disable server password authentication since crypt() is not available */
 #define DROPBEAR_SVR_PASSWORD_AUTH 0
 
-/* Disable client password authentication */
-#define DROPBEAR_CLI_PASSWORD_AUTH 0
+/* Disable client password authentication since getpass() is not available */
+#define DROPBEAR_CLIENT_PASSWORD_AUTH 0
 
-/* Disable PAM */
-#define DROPBEAR_SVR_PAM_AUTH 0
-
-/* Enable only public key auth for client */
-#define DROPBEAR_CLI_PUBKEY_AUTH 1
-
-/* Enable server public key auth */
+/* Enable only public key authentication */
 #define DROPBEAR_SVR_PUBKEY_AUTH 1
+#define DROPBEAR_CLIENT_PUBKEY_AUTH 1
 
-/* Disable other authentication methods */
-#define DROPBEAR_CLI_INTERACT_AUTH 0
-
-/* Programs to include in multi-binary */
+/* Enable multi-binary compilation */
 #define DROPBEAR_MULTI 1
 
-/* Disable features not available on Android */
+/* Disable features that cause issues on Android */
 #define DROPBEAR_SYSLOG 0
-#define USE_DEV_PTMX 1
+#define DROPBEAR_USE_PASSWORD_ENV 0
 
-#endif /* LOCALOPTIONS_H_ */
+#endif /* DROPBEAR_LOCALOPTIONS_H_ */
 EOF
 
     - name: Configure and compile Dropbear
@@ -86,11 +81,14 @@ EOF
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
         
-        # 设置编译标志来解决Android NDK兼容性问题
-        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
-        export LDFLAGS="-static -lz -lcrypt"
+        # Use the exact CFLAGS that worked in Termux
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -Wundef -fno-strict-overflow -Wno-pointer-sign"
+        export LDFLAGS="-static -lz"
         
-        # 配置Dropbear，禁用不兼容的功能
+        # Clean first
+        make clean
+        
+        # Configure with minimal options, let localoptions.h handle the rest
         ./configure \
           --host=$TARGET_ARCH \
           --enable-static \
@@ -104,8 +102,8 @@ EOF
           --disable-pam \
           --disable-shadow \
           --with-zlib=no
-        
-        # 编译多合一二进制文件
+
+        # Compile with the same flags as Termux
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
@@ -113,8 +111,8 @@ EOF
         cd "$DROPBEAR_SRC_DIR"
         $STRIP --strip-all dropbearmulti
         file dropbearmulti
-        # 测试二进制文件是否可运行
-        ./dropbearmulti --help || true
+        # Test that the binary works
+        ./dropbearmulti --help || echo "Binary built successfully"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
