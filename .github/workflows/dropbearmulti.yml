@@ -39,20 +39,6 @@ jobs:
           tar -xzf dropbear.tar.gz
           echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-      - name: Create localoptions.h to disable password auth
-        run: |
-          cd "$DROPBEAR_SRC_DIR"
-          cat > localoptions.h << 'EOF'
-#ifndef LOCALOPTIONS_H_
-#define LOCALOPTIONS_H_
-
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
-#define DROPBEAR_CLI_PASSWORD_AUTH 0
-#define DROPBEAR_CLI_INTERACT_AUTH 0
-
-#endif
-EOF
-
       - name: Setup environment and compiler
         run: |
           export TOOLCHAIN="$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -65,7 +51,9 @@ EOF
           echo "AR=$AR" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
-          echo "CCACHE_ENABLED=ccache $CC" >> $GITHUB_ENV
+
+          export CC="ccache $CC"
+          echo "CCACHE_ENABLED=$CC" >> $GITHUB_ENV
 
       - name: Configure and compile Dropbear
         run: |
@@ -73,13 +61,13 @@ EOF
 
           ./configure --host=$TARGET_ARCH \
             --enable-static \
-            --disable-harden \
             --disable-syslog \
             --disable-lastlog \
             --disable-utmp \
             --disable-utmpx \
             --disable-wtmp \
             --disable-wtmpx \
+            --disable-password-auth \
             MULTI=1 \
             PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp"
 
