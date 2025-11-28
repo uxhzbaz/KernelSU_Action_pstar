@@ -22,6 +22,7 @@ jobs:
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
           unzip -q android-ndk-r25b-linux.zip
+          echo "$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Setup ccache
         uses: actions/cache@v4
@@ -38,16 +39,38 @@ jobs:
           tar -xzf dropbear.tar.gz
           echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-      - name: Configure and compile Dropbear
+      - name: Create localoptions.h to disable password auth
         run: |
           cd "$DROPBEAR_SRC_DIR"
-          
-          export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cat > localoptions.h << 'EOF'
+#ifndef LOCALOPTIONS_H_
+#define LOCALOPTIONS_H_
+
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
+#define DROPBEAR_CLI_PASSWORD_AUTH 0
+#define DROPBEAR_CLI_INTERACT_AUTH 0
+
+#endif
+EOF
+
+      - name: Setup environment and compiler
+        run: |
+          export TOOLCHAIN="$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
           export AR="$TOOLCHAIN/llvm-ar"
           export RANLIB="$TOOLCHAIN/llvm-ranlib"
           export STRIP="$TOOLCHAIN/llvm-strip"
-          
+
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "CCACHE_ENABLED=ccache $CC" >> $GITHUB_ENV
+
+      - name: Configure and compile Dropbear
+        run: |
+          cd "$DROPBEAR_SRC_DIR"
+
           ./configure --host=$TARGET_ARCH \
             --enable-static \
             --disable-harden \
@@ -57,17 +80,15 @@ jobs:
             --disable-utmpx \
             --disable-wtmp \
             --disable-wtmpx \
-            --disable-pam \
             MULTI=1 \
             PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp"
-          
+
           make -j$(nproc) PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
-      - name: Strip binary and verify
+      - name: Strip binary
         run: |
           cd "$DROPBEAR_SRC_DIR"
           $STRIP --strip-all dropbearmulti
-          file dropbearmulti
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
