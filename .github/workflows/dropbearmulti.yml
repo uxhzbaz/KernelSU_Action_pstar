@@ -38,7 +38,7 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Configure and compile Dropbear
+    - name: Configure Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
         export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -46,13 +46,10 @@ jobs:
         export AR="$TOOLCHAIN/llvm-ar"
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
-        
-        # 设置CFLAGS来禁用密码认证和解决getpass问题
-        export CFLAGS="-DDROPBEAR_SVR_PASSWORD_AUTH=0 -DDROPBEAR_CLI_PASSWORD_AUTH=0 -DDROPBEAR_CLI_INTERACT_AUTH=0"
+        export CFLAGS="-Wno-undef -DNO_GETRANDOM -D_GNU_SOURCE"
         
         ./configure --host=$TARGET_ARCH \
           --enable-static \
-          --disable-shared \
           --disable-harden \
           --disable-syslog \
           --disable-lastlog \
@@ -61,15 +58,25 @@ jobs:
           --disable-wtmp \
           --disable-wtmpx \
           --disable-pam \
-          --disable-zlib \
-          --disable-shadow
+          --disable-shared \
+          --disable-svr-password-auth \
+          --disable-cli-password-auth
+
+    - name: Compile Dropbear
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
         
-        make -j$(nproc) PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
+        # 设置编译标志来避免getpass和相关错误
+        export CFLAGS="$CFLAGS -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
+        
+        make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        $STRIP --strip-all dropbearmulti
+        $TOOLCHAIN/llvm-strip --strip-all dropbearmulti
         file dropbearmulti
 
     - name: Upload artifact
