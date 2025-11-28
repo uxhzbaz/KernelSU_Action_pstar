@@ -1,16 +1,14 @@
-name: Build Dropbear Static for Android
+name: Static Dropbearmulti for Android ARM64
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
+  workflow_dispatch:
 
 env:
-  DROPBEAR_VERSION: '2024.84'
-  CC: 'aarch64-linux-android31-clang'
-  STRIP: 'llvm-strip'
+  DROPBEAR_VERSION: DROPBEAR_2025.88
 
 jobs:
   build:
@@ -26,135 +24,90 @@ jobs:
         sudo apt-get install -y wget unzip
 
     - name: Download Android NDK
-      run: |
-        wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-        unzip -q android-ndk-r25b-linux.zip
-        export TOOLCHAIN="$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
-        echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
+      run: wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
 
-    - name: Download Dropbear source
+    - name: Extract NDK
+      run: unzip -q android-ndk-r25b-linux.zip
+
+    - name: Download Dropbear
+      run: wget -q "https://github.com/mkj/dropbear/archive/refs/tags/$DROPBEAR_VERSION.tar.gz" -O dropbear.tar.gz
+
+    - name: Extract Dropbear
+      run: tar -xzf dropbear.tar.gz
+
+    - name: Set environment variables
       run: |
-        wget -q "https://github.com/mkj/dropbear/archive/refs/tags/$DROPBEAR_VERSION.tar.gz" -O dropbear.tar.gz
-        tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-$DROPBEAR_VERSION" >> $GITHUB_ENV
+        echo "TOOLCHAIN=$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
 
     - name: Configure Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        
-        # Create localoptions.h to disable problematic features
+        # 创建 localoptions.h 来禁用密码认证，避免 crypt() 依赖
         cat > localoptions.h << 'EOF'
-#ifndef DROPBEAR_LOCALOPTIONS_H_
-#define DROPBEAR_LOCALOPTIONS_H_
+#ifndef LOCALOPTIONS_H_
+#define LOCALOPTIONS_H_
 
-/* Disable password authentication since crypt() is not available on Android */
+/* 禁用密码认证以避免 crypt() 依赖 */
 #define DROPBEAR_SVR_PASSWORD_AUTH 0
 
-/* Disable PAM */
-#define DROPBEAR_SVR_PAM 0
-
-/* Enable multi-binary compilation */
+/* 启用多二进制编译 */
 #define DROPBEAR_MULTI 1
 
-/* Enable both client and server */
-#define DROPBEAR_CLIENT 1
-#define DROPBEAR_SERVER 1
+/* 定义要编译的程序 */
+#define DROPBEAR_DROPBEAR 1
+#define DROPBEAR_DBCLIENT 1
+#define DROPBEAR_DROPBEARKEY 1
+#define DROPBEAR_DROPBEARCONVERT 1
+#define DROPBEAR_SCP 1
 
-/* Disable features that may cause issues on Android */
-#define DROPBEAR_SVR_REMOTETCPFWD 1
-#define DROPBEAR_CLI_REMOTETCPFWD 1
-#define DROPBEAR_SVR_LOCALTCPFWD 1
-#define DROPBEAR_CLI_LOCALTCPFWD 1
-#define DROPBEAR_SVR_AGENTFWD 1
-#define DROPBEAR_CLI_AGENTFWD 1
-
-/* Disable lastlog and wtmp on Android */
-#define DROPBEAR_LASTLOG 0
-#define DROPBEAR_WTMP 0
-
-/* Enable zlib compression */
-#define DROPBEAR_ZLIB 1
-
-/* Enable syslog */
-#define DROPBEAR_SYSLOG 1
-
-/* Enable random device */
-#define DROPBEAR_USE_DEVURANDOM 1
-
+/* 禁用不必要功能以减少依赖 */
+#ifndef DISABLE_ZLIB
+#define DISABLE_ZLIB 1
 #endif
+
+/* 禁用系统日志 */
+#ifndef DISABLE_SYSLOG
+#define DISABLE_SYSLOG 1
+#endif
+
+#endif /* LOCALOPTIONS_H_ */
 EOF
-        
-        # Configure for static Android build
+
+        # 配置编译参数
+        CC="$TOOLCHAIN/aarch64-linux-android31-clang" \
+        CFLAGS="-Os -static -DNO_GETRANDOM -D_GNU_SOURCE" \
+        LDFLAGS="-static" \
         ./configure \
           --host=aarch64-linux-android \
           --enable-static \
           --disable-shared \
-          --disable-lastlog \
-          --disable-utmp \
-          --disable-utmpx \
-          --disable-wtmp \
-          --disable-wtmpx \
-          --disable-loginfunc \
-          --disable-pututline \
-          --disable-pututxline \
           --disable-syslog \
-          CC="$TOOLCHAIN/$CC" \
-          STRIP="$TOOLCHAIN/$STRIP" \
-          CFLAGS="-Os -fPIE -D_GNU_SOURCE -DNO_GETRANDOM" \
-          LDFLAGS="-static -pie" \
-          --with-zlib=system
+          --disable-zlib \
+          --disable-harden
 
-    - name: Build Dropbear multi-binary
+    - name: Build Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        
-        # Build multi-binary with all programs
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
-        
-        # Verify the binary was built
-        if [ -f "./dropbearmulti" ]; then
-          echo "✅ Dropbear multi-binary built successfully!"
-          file ./dropbearmulti
-          ls -lh ./dropbearmulti
-        else
-          echo "❌ Build failed - dropbearmulti not found"
-          exit 1
-        fi
 
-    - name: Create symbolic links
+    - name: Verify binary
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        # Create symlinks for different functionalities
-        for prog in dropbear dbclient dropbearkey dropbearconvert scp; do
-          ln -sf dropbearmulti $prog
-        done
-        
-        # Verify symlinks
-        ls -la dropbear dbclient dropbearkey dropbearconvert scp
+        file dropbearmulti
+        ls -la dropbearmulti
 
-    - name: Test binary compatibility
-      run: |
-        cd "$DROPBEAR_SRC_DIR"
-        
-        # Test if binary runs (should show help or version)
-        echo "Testing dropbearmulti:"
-        ./dropbearmulti -h || ./dropbearmulti --version || true
-        
-        echo "Testing individual symlinks:"
-        for prog in dropbear dbclient dropbearkey dropbearconvert scp; do
-          echo "Testing $prog:"
-          ./$prog -h || ./$prog --version || true
-        done
-
-    - name: Upload artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: dropbear-static-android
-        path: |
-          ${{ env.DROPBEAR_SRC_DIR }}/dropbearmulti
-          ${{ env.DROPBEAR_SRC_DIR }}/dropbear
-          ${{ env.DROPBEAR_SRC_DIR }}/dbclient
-          ${{ env.DROPBEAR_SRC_DIR }}/dropbearkey
-          ${{ env.DROPBEAR_SRC_DIR }}/dropbearconvert
-          ${{ env.DROPBEAR_SRC_DIR }}/scp
+        name: dropbearmulti-android-arm64
+        path: dropbear-$DROPBEAR_VERSION/dropbearmulti
         retention-days: 30
+
+    - name: Create release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dropbear-$DROPBEAR_VERSION/dropbearmulti
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
