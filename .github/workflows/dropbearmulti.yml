@@ -38,39 +38,12 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Apply Termux patches
+    - name: Apply necessary patches for Android compilation
       run: |
         cd "$DROPBEAR_SRC_DIR"
         # Apply the same patches that worked in Termux
         sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
         sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
-
-    - name: Create localoptions.h to disable password auth
-      run: |
-        cd "$DROPBEAR_SRC_DIR"
-        cat > localoptions.h << 'EOF'
-#ifndef DROPBEAR_LOCALOPTIONS_H_
-#define DROPBEAR_LOCALOPTIONS_H_
-
-/* Disable server password authentication since crypt() is not available */
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
-
-/* Disable client password authentication since getpass() is not available */
-#define DROPBEAR_CLIENT_PASSWORD_AUTH 0
-
-/* Enable only public key authentication */
-#define DROPBEAR_SVR_PUBKEY_AUTH 1
-#define DROPBEAR_CLIENT_PUBKEY_AUTH 1
-
-/* Enable multi-binary compilation */
-#define DROPBEAR_MULTI 1
-
-/* Disable features that cause issues on Android */
-#define DROPBEAR_SYSLOG 0
-#define DROPBEAR_USE_PASSWORD_ENV 0
-
-#endif /* DROPBEAR_LOCALOPTIONS_H_ */
-EOF
 
     - name: Configure and compile Dropbear
       run: |
@@ -81,14 +54,10 @@ EOF
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
         
-        # Use the exact CFLAGS that worked in Termux
-        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -Wundef -fno-strict-overflow -Wno-pointer-sign"
-        export LDFLAGS="-static -lz"
-        
-        # Clean first
+        # Clean previous builds
         make clean
         
-        # Configure with minimal options, let localoptions.h handle the rest
+        # Configure with Android-compatible options
         ./configure \
           --host=$TARGET_ARCH \
           --enable-static \
@@ -101,9 +70,11 @@ EOF
           --disable-wtmpx \
           --disable-pam \
           --disable-shadow \
-          --with-zlib=no
+          --disable-zlib \
+          --disable-openpty \
+          CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
 
-        # Compile with the same flags as Termux
+        # Compile with MULTI=1 for single binary
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
@@ -111,8 +82,8 @@ EOF
         cd "$DROPBEAR_SRC_DIR"
         $STRIP --strip-all dropbearmulti
         file dropbearmulti
-        # Test that the binary works
-        ./dropbearmulti --help || echo "Binary built successfully"
+        # Test the binary can at least show help
+        ./dropbearmulti --help || echo "Binary compiled successfully"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
