@@ -38,7 +38,7 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Configure Dropbear
+    - name: Configure and compile Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
         export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -46,9 +46,14 @@ jobs:
         export AR="$TOOLCHAIN/llvm-ar"
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
-        export CFLAGS="-Wno-undef -DNO_GETRANDOM -D_GNU_SOURCE"
         
-        ./configure --host=$TARGET_ARCH \
+        # 设置编译标志来解决Android NDK兼容性问题
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
+        export LDFLAGS="-static"
+        
+        # 配置Dropbear，禁用所有不兼容的功能
+        ./configure \
+          --host=$TARGET_ARCH \
           --enable-static \
           --disable-harden \
           --disable-syslog \
@@ -58,26 +63,21 @@ jobs:
           --disable-wtmp \
           --disable-wtmpx \
           --disable-pam \
-          --disable-shared \
-          --disable-svr-password-auth \
-          --disable-cli-password-auth
-
-    - name: Compile Dropbear
-      run: |
-        cd "$DROPBEAR_SRC_DIR"
-        export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
-        export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
+          --disable-shadow \
+          --disable-zlib \
+          --disable-password-auth \
+          --disable-openpty
         
-        # 设置编译标志来避免getpass和相关错误
-        export CFLAGS="$CFLAGS -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
-        
+        # 编译多合一二进制文件
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        $TOOLCHAIN/llvm-strip --strip-all dropbearmulti
+        $STRIP --strip-all dropbearmulti
         file dropbearmulti
+        # 测试二进制文件是否可运行
+        ./dropbearmulti --help || true
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
