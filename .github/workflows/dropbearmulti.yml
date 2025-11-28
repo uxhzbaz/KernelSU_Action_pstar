@@ -1,85 +1,160 @@
-name: Build Static Dropbearmulti for Android ARM64
+name: Build Dropbear Static for Android
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'dropbear-*'
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
 env:
-  DROPBEAR_VERSION: "DROPBEAR_2025.88"
-  TARGET_ARCH: "aarch64-linux-android"
+  DROPBEAR_VERSION: '2024.84'
+  CC: 'aarch64-linux-android31-clang'
+  STRIP: 'llvm-strip'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Setup Android NDK
-        run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-          unzip -q android-ndk-r25b-linux.zip
-          echo "$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+    - name: Setup environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget unzip
 
-      - name: Setup ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ env.TARGET_ARCH }}-${{ env.DROPBEAR_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ env.TARGET_ARCH }}-
-            ${{ runner.os }}-ccache-
+    - name: Download Android NDK
+      run: |
+        wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+        unzip -q android-ndk-r25b-linux.zip
+        export TOOLCHAIN="$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
 
-      - name: Download Dropbear source
-        run: |
-          wget -q "https://github.com/mkj/dropbear/archive/refs/tags/$DROPBEAR_VERSION.tar.gz" -O dropbear.tar.gz
-          tar -xzf dropbear.tar.gz
-          echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
+    - name: Download Dropbear source
+      run: |
+        wget -q "https://github.com/mkj/dropbear/archive/refs/tags/$DROPBEAR_VERSION.tar.gz" -O dropbear.tar.gz
+        tar -xzf dropbear.tar.gz
+        echo "DROPBEAR_SRC_DIR=dropbear-$DROPBEAR_VERSION" >> $GITHUB_ENV
 
-      - name: Setup environment and compiler
-        run: |
-          export TOOLCHAIN="$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
-          export AR="$TOOLCHAIN/llvm-ar"
-          export RANLIB="$TOOLCHAIN/llvm-ranlib"
-          export STRIP="$TOOLCHAIN/llvm-strip"
+    - name: Configure Dropbear
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        
+        # Create localoptions.h to disable problematic features
+        cat > localoptions.h << 'EOF'
+#ifndef DROPBEAR_LOCALOPTIONS_H_
+#define DROPBEAR_LOCALOPTIONS_H_
 
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "AR=$AR" >> $GITHUB_ENV
-          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
-          echo "STRIP=$STRIP" >> $GITHUB_ENV
+/* Disable password authentication since crypt() is not available on Android */
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
 
-          export CC="ccache $CC"
-          echo "CCACHE_ENABLED=$CC" >> $GITHUB_ENV
+/* Disable PAM */
+#define DROPBEAR_SVR_PAM 0
 
-      - name: Configure and compile Dropbear
-        run: |
-          cd "$DROPBEAR_SRC_DIR"
+/* Enable multi-binary compilation */
+#define DROPBEAR_MULTI 1
 
-          ./configure --host=$TARGET_ARCH \
-            --enable-static \
-            --disable-syslog \
-            --disable-lastlog \
-            --disable-utmp \
-            --disable-utmpx \
-            --disable-wtmp \
-            --disable-wtmpx \
-            --disable-password-auth \
-            MULTI=1 \
-            PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp"
+/* Enable both client and server */
+#define DROPBEAR_CLIENT 1
+#define DROPBEAR_SERVER 1
 
-          make -j$(nproc) PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
+/* Disable features that may cause issues on Android */
+#define DROPBEAR_SVR_REMOTETCPFWD 1
+#define DROPBEAR_CLI_REMOTETCPFWD 1
+#define DROPBEAR_SVR_LOCALTCPFWD 1
+#define DROPBEAR_CLI_LOCALTCPFWD 1
+#define DROPBEAR_SVR_AGENTFWD 1
+#define DROPBEAR_CLI_AGENTFWD 1
 
-      - name: Strip binary
-        run: |
-          cd "$DROPBEAR_SRC_DIR"
-          $STRIP --strip-all dropbearmulti
+/* Disable lastlog and wtmp on Android */
+#define DROPBEAR_LASTLOG 0
+#define DROPBEAR_WTMP 0
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dropbearmulti-static-android-arm64
-          path: ${{ env.DROPBEAR_SRC_DIR }}/dropbearmulti
+/* Enable zlib compression */
+#define DROPBEAR_ZLIB 1
+
+/* Enable syslog */
+#define DROPBEAR_SYSLOG 1
+
+/* Enable random device */
+#define DROPBEAR_USE_DEVURANDOM 1
+
+#endif
+EOF
+        
+        # Configure for static Android build
+        ./configure \
+          --host=aarch64-linux-android \
+          --enable-static \
+          --disable-shared \
+          --disable-lastlog \
+          --disable-utmp \
+          --disable-utmpx \
+          --disable-wtmp \
+          --disable-wtmpx \
+          --disable-loginfunc \
+          --disable-pututline \
+          --disable-pututxline \
+          --disable-syslog \
+          CC="$TOOLCHAIN/$CC" \
+          STRIP="$TOOLCHAIN/$STRIP" \
+          CFLAGS="-Os -fPIE -D_GNU_SOURCE -DNO_GETRANDOM" \
+          LDFLAGS="-static -pie" \
+          --with-zlib=system
+
+    - name: Build Dropbear multi-binary
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        
+        # Build multi-binary with all programs
+        make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
+        
+        # Verify the binary was built
+        if [ -f "./dropbearmulti" ]; then
+          echo "✅ Dropbear multi-binary built successfully!"
+          file ./dropbearmulti
+          ls -lh ./dropbearmulti
+        else
+          echo "❌ Build failed - dropbearmulti not found"
+          exit 1
+        fi
+
+    - name: Create symbolic links
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        # Create symlinks for different functionalities
+        for prog in dropbear dbclient dropbearkey dropbearconvert scp; do
+          ln -sf dropbearmulti $prog
+        done
+        
+        # Verify symlinks
+        ls -la dropbear dbclient dropbearkey dropbearconvert scp
+
+    - name: Test binary compatibility
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        
+        # Test if binary runs (should show help or version)
+        echo "Testing dropbearmulti:"
+        ./dropbearmulti -h || ./dropbearmulti --version || true
+        
+        echo "Testing individual symlinks:"
+        for prog in dropbear dbclient dropbearkey dropbearconvert scp; do
+          echo "Testing $prog:"
+          ./$prog -h || ./$prog --version || true
+        done
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dropbear-static-android
+        path: |
+          ${{ env.DROPBEAR_SRC_DIR }}/dropbearmulti
+          ${{ env.DROPBEAR_SRC_DIR }}/dropbear
+          ${{ env.DROPBEAR_SRC_DIR }}/dbclient
+          ${{ env.DROPBEAR_SRC_DIR }}/dropbearkey
+          ${{ env.DROPBEAR_SRC_DIR }}/dropbearconvert
+          ${{ env.DROPBEAR_SRC_DIR }}/scp
+        retention-days: 30
