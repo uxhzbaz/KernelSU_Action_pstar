@@ -38,32 +38,41 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Create localoptions.h to disable problematic features
+    - name: Create custom localoptions.h
       run: |
         cd "$DROPBEAR_SRC_DIR"
         cat > localoptions.h << 'EOF'
 #ifndef LOCALOPTIONS_H_
 #define LOCALOPTIONS_H_
 
+/* Override system detection for crypt and getpass */
+#define HAVE_CRYPT 0
+#define HAVE_GETPASS 0
+
 /* Disable server password authentication */
 #define DROPBEAR_SVR_PASSWORD_AUTH 0
 
 /* Disable client password authentication */
-#define DROPBEAR_CLIENT_PASS_AUTH 0
+#define DROPBEAR_CLI_PASSWORD_AUTH 0
 
-/* Enable only public key authentication */
+/* Disable PAM */
+#define DROPBEAR_SVR_PAM_AUTH 0
+
+/* Enable only public key auth for client */
+#define DROPBEAR_CLI_PUBKEY_AUTH 1
+
+/* Enable server public key auth */
 #define DROPBEAR_SVR_PUBKEY_AUTH 1
-#define DROPBEAR_CLIENT_PUBKEY_AUTH 1
 
-/* Disable features that require crypt() */
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
+/* Disable other authentication methods */
+#define DROPBEAR_CLI_INTERACT_AUTH 0
 
-/* Disable other problematic features for Android */
-#define DROPBEAR_SYSLOG 0
-#define DROPBEAR_USE_PAM 0
-
-/* Enable multi-binary */
+/* Programs to include in multi-binary */
 #define DROPBEAR_MULTI 1
+
+/* Disable features not available on Android */
+#define DROPBEAR_SYSLOG 0
+#define USE_DEV_PTMX 1
 
 #endif /* LOCALOPTIONS_H_ */
 EOF
@@ -79,9 +88,9 @@ EOF
         
         # 设置编译标志来解决Android NDK兼容性问题
         export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
-        export LDFLAGS="-static"
+        export LDFLAGS="-static -lz -lcrypt"
         
-        # 配置Dropbear，禁用所有不兼容的功能
+        # 配置Dropbear，禁用不兼容的功能
         ./configure \
           --host=$TARGET_ARCH \
           --enable-static \
@@ -94,8 +103,7 @@ EOF
           --disable-wtmpx \
           --disable-pam \
           --disable-shadow \
-          --disable-zlib \
-          --disable-openpty
+          --with-zlib=no
         
         # 编译多合一二进制文件
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
