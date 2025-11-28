@@ -38,44 +38,19 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Create localoptions.h to disable password authentication
-      run: |
-        cd "$DROPBEAR_SRC_DIR"
-        cat > localoptions.h << 'EOF'
-        #ifndef DROPBEAR_LOCALOPTIONS_H_
-        #define DROPBEAR_LOCALOPTIONS_H_
-        
-        /* Disable server password authentication since crypt() is not available */
-        #define DROPBEAR_SVR_PASSWORD_AUTH 0
-        
-        /* Enable multi-binary compilation */
-        #define DROPBEAR_MULTI 1
-        
-        /* Define which multi binaries to include */
-        #define DBMULTI_DROPBEAR 1
-        #define DBMULTI_DBCLIENT 1  
-        #define DBMULTI_DROPBEARKEY 1
-        #define DBMULTI_DROPBEARCONVERT 1
-        #define DBMULTI_SCP 1
-        
-        /* Additional Android-specific optimizations */
-        #define DROPBEAR_SMALL_CODE 1
-        
-        #endif /* DROPBEAR_LOCALOPTIONS_H_ */
-        EOF
-
     - name: Configure and compile Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
         export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
         export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
         export AR="$TOOLCHAIN/llvm-ar"
-        export RANLIB="$TOOLCHAIN/llvm-ranlib" 
+        export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
-        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0"
         
-        ./configure \
-          --host=$TARGET_ARCH \
+        # 设置CFLAGS来禁用密码认证和解决getpass问题
+        export CFLAGS="-DDROPBEAR_SVR_PASSWORD_AUTH=0 -DDROPBEAR_CLI_PASSWORD_AUTH=0 -DDROPBEAR_CLI_INTERACT_AUTH=0"
+        
+        ./configure --host=$TARGET_ARCH \
           --enable-static \
           --disable-shared \
           --disable-harden \
@@ -87,20 +62,18 @@ jobs:
           --disable-wtmpx \
           --disable-pam \
           --disable-zlib \
-          CFLAGS="$CFLAGS"
+          --disable-shadow
         
-        make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1 -j$(nproc)
+        make -j$(nproc) PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
       run: |
         cd "$DROPBEAR_SRC_DIR"
         $STRIP --strip-all dropbearmulti
         file dropbearmulti
-        ls -la dropbearmulti
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: dropbearmulti-static-android-arm64
         path: ${{ env.DROPBEAR_SRC_DIR }}/dropbearmulti
-        retention-days: 7
