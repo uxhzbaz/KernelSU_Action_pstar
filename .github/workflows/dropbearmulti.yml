@@ -38,6 +38,36 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
+    - name: Create localoptions.h to disable problematic features
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        cat > localoptions.h << 'EOF'
+#ifndef LOCALOPTIONS_H_
+#define LOCALOPTIONS_H_
+
+/* Disable server password authentication */
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
+
+/* Disable client password authentication */
+#define DROPBEAR_CLIENT_PASS_AUTH 0
+
+/* Enable only public key authentication */
+#define DROPBEAR_SVR_PUBKEY_AUTH 1
+#define DROPBEAR_CLIENT_PUBKEY_AUTH 1
+
+/* Disable features that require crypt() */
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
+
+/* Disable other problematic features for Android */
+#define DROPBEAR_SYSLOG 0
+#define DROPBEAR_USE_PAM 0
+
+/* Enable multi-binary */
+#define DROPBEAR_MULTI 1
+
+#endif /* LOCALOPTIONS_H_ */
+EOF
+
     - name: Configure and compile Dropbear
       run: |
         cd "$DROPBEAR_SRC_DIR"
@@ -65,7 +95,6 @@ jobs:
           --disable-pam \
           --disable-shadow \
           --disable-zlib \
-          --disable-password-auth \
           --disable-openpty
         
         # 编译多合一二进制文件
