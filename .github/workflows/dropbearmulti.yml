@@ -45,9 +45,75 @@ jobs:
         sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
         # 修复 fexecve 在Android上的问题
         sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
-        # 禁用密码认证，因为Android没有crypt()
-        echo "#define DROPBEAR_SVR_PASSWORD_AUTH 0" >> localoptions.h
-        echo "#define DROPBEAR_CLIENT_PASSWORD_AUTH 0" >> localoptions.h
+        
+        # 为Android提供getpass替代实现
+        cat >> src/compat.c << 'EOF'
+
+/* getpass replacement for Android */
+char* getpass(const char* prompt) {
+    static char buf[128];
+    size_t len = 0;
+    int c;
+    
+    fprintf(stderr, "%s", prompt);
+    fflush(stderr);
+    
+    while (len < sizeof(buf) - 1) {
+        c = getchar();
+        if (c == EOF || c == '\n' || c == '\r') {
+            break;
+        }
+        buf[len++] = c;
+    }
+    buf[len] = '\0';
+    
+    return buf;
+}
+EOF
+
+        # 创建localoptions.h禁用不支持的功能
+        cat > localoptions.h << 'EOF'
+#ifndef DROPBEAR_LOCALOPTIONS_H_
+#define DROPBEAR_LOCALOPTIONS_H_
+
+/* Disable password authentication */
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
+#define DROPBEAR_CLIENT_PASSWORD_AUTH 0
+
+/* Disable features not available on Android */
+#define DROPBEAR_SVR_PAM_AUTH 0
+#define DROPBEAR_USE_PASSWORD_ENV 0
+
+/* Enable only essential features to reduce binary size */
+#define DROPBEAR_DH_GROUP14_SHA1 1
+#define DROPBEAR_DH_GROUP14_SHA256 1
+#define DROPBEAR_CURVE25519 1
+#define DROPBEAR_ECDSA 1
+#define DROPBEAR_ED25519 1
+#define DROPBEAR_RSA 1
+#define DROPBEAR_DSS 0
+
+/* Disable non-essential features */
+#define DROPBEAR_DH_GROUP1 0
+#define DROPBEAR_DH_GROUP16 0
+#define DROPBEAR_DH_GROUP18 0
+#define DROPBEAR_ECDH 1
+
+/* Enable multi-mode binary */
+#define DROPBEAR_MULTI 1
+
+/* Enable client and server */
+#define DROPBEAR_CLIENT 1
+#define DROPBEAR_SERVER 1
+
+/* Enable useful programs */
+#define DROPBEAR_DBCLIENT 1
+#define DROPBEAR_DROPBEARKEY 1
+#define DROPBEAR_DROPBEARCONVERT 1
+#define DROPBEAR_SCP 1
+
+#endif
+EOF
 
     - name: Configure and compile Dropbear
       run: |
@@ -59,7 +125,7 @@ jobs:
         export STRIP="$TOOLCHAIN/llvm-strip"
         
         # 设置编译标志
-        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=1"
         export LDFLAGS="-static"
         
         # 配置Dropbear
