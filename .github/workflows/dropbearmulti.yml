@@ -38,12 +38,16 @@ jobs:
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Apply necessary patches for Android compilation
+    - name: Apply source patches for Android compatibility
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        # Apply the same patches that worked in Termux
+        # 修复 getrandom 系统调用在Android上的问题
         sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
+        # 修复 fexecve 在Android上的问题
         sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
+        # 禁用密码认证，因为Android没有crypt()
+        echo "#define DROPBEAR_SVR_PASSWORD_AUTH 0" >> localoptions.h
+        echo "#define DROPBEAR_CLIENT_PASSWORD_AUTH 0" >> localoptions.h
 
     - name: Configure and compile Dropbear
       run: |
@@ -54,10 +58,11 @@ jobs:
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
         
-        # Clean previous builds
-        make clean
+        # 设置编译标志
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
+        export LDFLAGS="-static"
         
-        # Configure with Android-compatible options
+        # 配置Dropbear
         ./configure \
           --host=$TARGET_ARCH \
           --enable-static \
@@ -70,11 +75,9 @@ jobs:
           --disable-wtmpx \
           --disable-pam \
           --disable-shadow \
-          --disable-zlib \
-          --disable-openpty \
-          CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
-
-        # Compile with MULTI=1 for single binary
+          --disable-zlib
+        
+        # 编译多合一二进制文件
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
     - name: Strip binary and verify
@@ -82,8 +85,8 @@ jobs:
         cd "$DROPBEAR_SRC_DIR"
         $STRIP --strip-all dropbearmulti
         file dropbearmulti
-        # Test the binary can at least show help
-        ./dropbearmulti --help || echo "Binary compiled successfully"
+        # 测试二进制文件是否可运行
+        ./dropbearmulti --help || true
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
