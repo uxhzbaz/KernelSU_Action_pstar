@@ -1,10 +1,9 @@
-name: Build Static Dropbearmulti for Android ARM64
+name: Build Dropbear for Android ARM64
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'dropbear-*'
+    tags: ['dropbear-*']
 
 env:
   DROPBEAR_VERSION: "DROPBEAR_2025.88"
@@ -13,7 +12,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -23,99 +21,13 @@ jobs:
         wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
         unzip -q android-ndk-r25b-linux.zip
 
-    - name: Setup ccache
-      uses: actions/cache@v4
-      with:
-        path: ~/.ccache
-        key: ${{ runner.os }}-ccache-${{ env.TARGET_ARCH }}-${{ env.DROPBEAR_VERSION }}
-        restore-keys: |
-          ${{ runner.os }}-ccache-${{ env.TARGET_ARCH }}-
-          ${{ runner.os }}-ccache-
-
     - name: Download Dropbear source
       run: |
         wget -q "https://github.com/mkj/dropbear/archive/refs/tags/$DROPBEAR_VERSION.tar.gz" -O dropbear.tar.gz
         tar -xzf dropbear.tar.gz
         echo "DROPBEAR_SRC_DIR=dropbear-${DROPBEAR_VERSION}" >> $GITHUB_ENV
 
-    - name: Apply source patches for Android compatibility
-      run: |
-        cd "$DROPBEAR_SRC_DIR"
-        # 修复 getrandom 系统调用在Android上的问题
-        sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
-        # 修复 fexecve 在Android上的问题
-        sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
-        
-        # 为Android提供getpass替代实现
-        cat >> src/compat.c << 'EOF'
-
-/* getpass replacement for Android */
-char* getpass(const char* prompt) {
-    static char buf[128];
-    size_t len = 0;
-    int c;
-    
-    fprintf(stderr, "%s", prompt);
-    fflush(stderr);
-    
-    while (len < sizeof(buf) - 1) {
-        c = getchar();
-        if (c == EOF || c == '\n' || c == '\r') {
-            break;
-        }
-        buf[len++] = c;
-    }
-    buf[len] = '\0';
-    
-    return buf;
-}
-EOF
-
-        # 创建localoptions.h禁用不支持的功能
-        cat > localoptions.h << 'EOF'
-#ifndef DROPBEAR_LOCALOPTIONS_H_
-#define DROPBEAR_LOCALOPTIONS_H_
-
-/* Disable password authentication */
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
-#define DROPBEAR_CLIENT_PASSWORD_AUTH 0
-
-/* Disable features not available on Android */
-#define DROPBEAR_SVR_PAM_AUTH 0
-#define DROPBEAR_USE_PASSWORD_ENV 0
-
-/* Enable only essential features to reduce binary size */
-#define DROPBEAR_DH_GROUP14_SHA1 1
-#define DROPBEAR_DH_GROUP14_SHA256 1
-#define DROPBEAR_CURVE25519 1
-#define DROPBEAR_ECDSA 1
-#define DROPBEAR_ED25519 1
-#define DROPBEAR_RSA 1
-#define DROPBEAR_DSS 0
-
-/* Disable non-essential features */
-#define DROPBEAR_DH_GROUP1 0
-#define DROPBEAR_DH_GROUP16 0
-#define DROPBEAR_DH_GROUP18 0
-#define DROPBEAR_ECDH 1
-
-/* Enable multi-mode binary */
-#define DROPBEAR_MULTI 1
-
-/* Enable client and server */
-#define DROPBEAR_CLIENT 1
-#define DROPBEAR_SERVER 1
-
-/* Enable useful programs */
-#define DROPBEAR_DBCLIENT 1
-#define DROPBEAR_DROPBEARKEY 1
-#define DROPBEAR_DROPBEARCONVERT 1
-#define DROPBEAR_SCP 1
-
-#endif
-EOF
-
-    - name: Configure and compile Dropbear
+    - name: Setup environment and apply patches
       run: |
         cd "$DROPBEAR_SRC_DIR"
         export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -124,11 +36,26 @@ EOF
         export RANLIB="$TOOLCHAIN/llvm-ranlib"
         export STRIP="$TOOLCHAIN/llvm-strip"
         
-        # 设置编译标志
-        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=1"
+        # 应用补丁修复Android兼容性问题[citation:9]
+        sed -i 's/#ifdef HAVE_GETRANDOM/#if 0/' src/dbrandom.c
+        sed -i 's/fexecve(execfd, new_argv, environ);/execve(new_argv[0], new_argv, environ);/' src/svr-main.c
+        
+        # 创建localoptions.h禁用密码认证[citation:9]
+        echo "#define DROPBEAR_SVR_PASSWORD_AUTH 0" > localoptions.h
+        echo "#define DROPBEAR_CLIENT_PASSWORD_AUTH 0" >> localoptions.h
+
+    - name: Attempt static build
+      id: static_build
+      continue-on-error: true
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
+        
+        # 静态编译配置[citation:9]
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
         export LDFLAGS="-static"
         
-        # 配置Dropbear
         ./configure \
           --host=$TARGET_ARCH \
           --enable-static \
@@ -143,19 +70,79 @@ EOF
           --disable-shadow \
           --disable-zlib
         
-        # 编译多合一二进制文件
         make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
+        
+        # 验证静态二进制文件
+        file dropbearmulti | grep "statically linked" && echo "STATIC_BUILD=true" >> $GITHUB_OUTPUT
 
-    - name: Strip binary and verify
+    - name: Dynamic build fallback
+      if: steps.static_build.outputs.STATIC_BUILD != 'true'
       run: |
         cd "$DROPBEAR_SRC_DIR"
-        $STRIP --strip-all dropbearmulti
-        file dropbearmulti
-        # 测试二进制文件是否可运行
-        ./dropbearmulti --help || true
+        make clean
+        
+        export TOOLCHAIN="$(pwd)/../android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        export CC="$TOOLCHAIN/${TARGET_ARCH}31-clang"
+        
+        # 动态编译配置
+        export CFLAGS="-DNO_GETRANDOM -D_GNU_SOURCE -DHAVE_CRYPT=0 -DHAVE_GETPASS=0"
+        export LDFLAGS="-Wl,-rpath=/system/lib64"
+        
+        ./configure \
+          --host=$TARGET_ARCH \
+          --disable-harden \
+          --disable-syslog \
+          --disable-lastlog \
+          --disable-utmp \
+          --disable-utmpx \
+          --disable-wtmp \
+          --disable-wtmpx \
+          --disable-pam \
+          --disable-shadow \
+          --disable-zlib
+        
+        make PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1
 
-    - name: Upload artifact
+    - name: Extract dynamic dependencies
+      if: steps.static_build.outputs.STATIC_BUILD != 'true'
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        mkdir -p dropbear-libs
+        
+        # 提取依赖库[citation:9]
+        $TOOLCHAIN/llvm-readelf -d dropbearmulti | grep "Shared library" | awk '{print $5}' | tr -d '[]' > libs.txt
+        
+        # 复制所需的动态库
+        for lib in $(cat libs.txt); do
+          find ../android-ndk-r25b -name "$lib" -exec cp {} dropbear-libs/ \;
+        done
+        
+        # 复制二进制文件
+        cp dropbearmulti dropbear-libs/
+
+    - name: Prepare artifacts
+      run: |
+        cd "$DROPBEAR_SRC_DIR"
+        
+        if [ -f dropbearmulti ] && [ "${{ steps.static_build.outputs.STATIC_BUILD }}" = "true" ]; then
+          $STRIP --strip-all dropbearmulti
+          mkdir -p artifacts
+          mv dropbearmulti artifacts/
+          echo "BUILD_TYPE=static" >> $GITHUB_ENV
+        elif [ -d dropbear-libs ]; then
+          mkdir -p artifacts
+          cp -r dropbear-libs/* artifacts/
+          echo "BUILD_TYPE=dynamic" >> $GITHUB_ENV
+        else
+          echo "Build failed"
+          exit 1
+        fi
+        
+        # 验证二进制文件
+        file artifacts/dropbearmulti
+
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: dropbearmulti-static-android-arm64
-        path: ${{ env.DROPBEAR_SRC_DIR }}/dropbearmulti
+        name: dropbear-${{ env.BUILD_TYPE }}-android-arm64
+        path: ${{ env.DROPBEAR_SRC_DIR }}/artifacts/
