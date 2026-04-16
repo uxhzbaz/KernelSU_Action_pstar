@@ -4,18 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: 'Node.js version'
+        description: 'Node.js version (e.g. v24.15.0)'
         required: true
         default: 'v24.15.0'
 
 env:
-  NODE_VERSION: ${{ github.event.inputs.node_version || 'v24.15.0' }}
+  NODE_VERSION: ${{ github.event.inputs.node_version }}
   MUSL_CROSS_URL: https://musl.cc/aarch64-linux-musl-cross.tgz
   MUSL_CROSS_DIR: aarch64-linux-musl-cross
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # 强制 GitHub Actions 使用 Node.js 24 运行（解决 Node 20 弃用警告）
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -24,26 +25,29 @@ jobs:
 
       - name: Download and extract musl cross toolchain
         run: |
-          wget -q ${{ env.MUSL_CROSS_URL }} -O musl-cross.tgz
+          wget -q "${{ env.MUSL_CROSS_URL }}" -O musl-cross.tgz
           tar -xzf musl-cross.tgz
           echo "$PWD/${{ env.MUSL_CROSS_DIR }}/bin" >> $GITHUB_PATH
 
       - name: Download Node.js source
         run: |
-          wget -q https://github.com/nodejs/node/archive/refs/tags/${{ env.NODE_VERSION }}.tar.gz
-          tar -xzf ${{ env.NODE_VERSION }}.tar.gz
-          cd node-${{ env.NODE_VERSION }}
+          wget -q "https://github.com/nodejs/node/archive/refs/tags/${{ env.NODE_VERSION }}.tar.gz"
+          tar -xzf "${{ env.NODE_VERSION }}.tar.gz"
+          # 重命名解压目录为 node-source
+          mv "node-${{ env.NODE_VERSION }}" node-source
 
-      - name: Configure Node.js for static musl build
+      - name: Configure Node.js for fully static musl build
         run: |
-          cd node-${{ env.NODE_VERSION }}
+          cd node-source
           export CC="aarch64-linux-musl-gcc"
           export CXX="aarch64-linux-musl-g++"
           export AR="aarch64-linux-musl-ar"
           export RANLIB="aarch64-linux-musl-ranlib"
+          # 强制静态链接，优化体积
           export CFLAGS="-static -O2 -ffunction-sections -fdata-sections"
           export CXXFLAGS="-static -O2 -ffunction-sections -fdata-sections"
           export LDFLAGS="-static -Wl,--gc-sections -Wl,--strip-all"
+          # 注意：不使用任何 --shared-* 选项，全部使用内置库并完全静态
           ./configure \
             --dest-cpu=arm64 \
             --dest-os=linux \
@@ -51,39 +55,21 @@ jobs:
             --without-snapshot \
             --with-intl=none \
             --openssl-no-asm \
-            --shared-zlib \
-            --shared-openssl \
-            --shared-libuv \
-            --shared-cares \
-            --shared-nghttp2 \
-            --shared-brotli \
-            --shared-icu \
             --cross-compiling
-          # 注意：由于我们使用 musl 工具链，且要求完全静态，上述 --shared-* 选项可能导致动态链接依赖，应改为 --enable-static 或直接使用内置库。
-          # 更可靠的配置如下（使用内置库并强制静态链接）：
-          # ./configure \
-          #   --dest-cpu=arm64 \
-          #   --dest-os=linux \
-          #   --fully-static \
-          #   --without-snapshot \
-          #   --with-intl=none \
-          #   --openssl-no-asm \
-          #   --cross-compiling
 
       - name: Build Node.js
         run: |
-          cd node-${{ env.NODE_VERSION }}
+          cd node-source
           make -j$(nproc)
 
       - name: Strip and prepare binary
         run: |
-          cd node-${{ env.NODE_VERSION }}
+          cd node-source
           # 静态链接的可执行文件位于 out/Release/node
           aarch64-linux-musl-strip out/Release/node
           mkdir -p artifacts
           cp out/Release/node artifacts/node-aarch64-musl-static
-          cp out/Release/node artifacts/node-aarch64-musl-static
-          # 可选：检查动态依赖
+          # 验证文件类型和动态依赖
           file artifacts/node-aarch64-musl-static
           ldd artifacts/node-aarch64-musl-static || true
 
@@ -91,4 +77,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: node-static-aarch64-musl
-          path: node-${{ env.NODE_VERSION }}/artifacts/
+          path: node-source/artifacts/
